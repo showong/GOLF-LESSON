@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+build/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# 로컬 데이터/업로드는 커밋하지 않음
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+uploads/
+tmp/
