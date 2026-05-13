@@ -47,7 +47,7 @@ npm run dev
 | 키 | 설명 |
 |---|---|
 | `GEMINI_API_KEY` | Google AI Studio에서 발급한 키 (필수) |
-| `GEMINI_MODEL` | 기본 `gemini-3.1-pro`. 멀티모달/비디오 지원 모델이어야 함 |
+| `GEMINI_MODEL` | 기본 `gemini-3.1-flash-lite`. 멀티모달/비디오 지원 모델이어야 함 |
 | `SQLITE_PATH` | SQLite 파일 경로 (기본 `./data/golf-lesson.db`) |
 | `UPLOAD_DIR` | 영상 임시 저장 디렉토리 (기본 `./uploads`) |
 

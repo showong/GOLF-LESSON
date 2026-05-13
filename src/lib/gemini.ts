@@ -15,7 +15,7 @@ import type {
   SwingAnalysis,
 } from "./types";
 
-const MODEL = process.env.GEMINI_MODEL ?? "gemini-3.1-pro";
+const MODEL = process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite";
 
 function apiKey(): string {
   const k = process.env.GEMINI_API_KEY;
