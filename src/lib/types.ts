@@ -22,14 +22,23 @@ export type Level = 1 | 2 | 3;
 export interface SwingPoint {
   title: string;
   detail: string;
+  emphasis?: "key" | "normal";
+}
+
+export interface SwingFocus {
+  title: string;
+  detail: string;
+  why: string;
 }
 
 export interface SwingAnalysis {
   clubType: ClubType;
   clubConfidence: number;
+  clubCues: string[];
   grade: Grade;
   level: Level;
   gradeRationale: string;
+  topFocus: SwingFocus;
   strengths: SwingPoint[];
   weaknesses: SwingPoint[];
   drills: SwingPoint[];

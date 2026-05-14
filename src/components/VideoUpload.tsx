@@ -7,9 +7,12 @@ interface Props {
   onResult: (data: unknown) => void;
 }
 
+type ClubHint = "" | "driver" | "iron" | "approach";
+
 export default function VideoUpload({ nickname, onResult }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
+  const [clubHint, setClubHint] = useState<ClubHint>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,6 +31,7 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       const fd = new FormData();
       fd.append("nickname", nickname.trim());
       fd.append("video", file);
+      if (clubHint) fd.append("clubHint", clubHint);
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "분석 실패");
@@ -50,7 +54,8 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         스크린골프장에서 받은 mp4/mov 영상을 그대로 올려주세요. 코치가 클럽
         종류(드라이버·아이언·어프로치)도 자동으로 알아봐요.
       </p>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+
+      <div className="mt-4 space-y-3">
         <input
           ref={inputRef}
           type="file"
@@ -58,14 +63,48 @@ export default function VideoUpload({ nickname, onResult }: Props) {
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
           className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-fairway-500 file:px-4 file:py-2 file:text-white hover:file:bg-fairway-600"
         />
+
+        <div>
+          <label className="block text-xs font-medium text-fairway-700">
+            클럽 종류
+            <span className="ml-1 text-fairway-700/60">
+              (스윙이 빨라 자동 인식이 어려울 때 직접 지정하세요)
+            </span>
+          </label>
+          <div className="mt-1 grid grid-cols-4 gap-2">
+            {(
+              [
+                { value: "", label: "자동 인식" },
+                { value: "driver", label: "드라이버" },
+                { value: "iron", label: "아이언" },
+                { value: "approach", label: "어프로치" },
+              ] as { value: ClubHint; label: string }[]
+            ).map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setClubHint(opt.value)}
+                className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                  clubHint === opt.value
+                    ? "border-fairway-700 bg-fairway-700 text-white"
+                    : "border-fairway-100 bg-white text-fairway-900 hover:border-fairway-500"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <button
           onClick={submit}
           disabled={busy}
-          className="rounded-lg bg-fairway-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          className="w-full rounded-lg bg-fairway-700 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50 sm:w-auto"
         >
           {busy ? "코치가 영상을 보는 중…" : "AI 코치에게 보내기"}
         </button>
       </div>
+
       {file && (
         <div className="mt-3 text-xs text-fairway-700/80">
           선택됨: {file.name} ({Math.round(file.size / 1024 / 1024)} MB)
@@ -78,8 +117,8 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       )}
       {busy && (
         <div className="mt-3 text-xs text-fairway-700/70">
-          영상 업로드 후 Gemini 3.1이 프레임을 분석하고 있어요. 30초~1분 정도
-          걸릴 수 있어요.
+          영상 업로드 후 Gemini가 어드레스 단서와 스윙 메커니즘을 분석하고 있어요.
+          30초~1분 정도 걸릴 수 있어요.
         </div>
       )}
     </section>

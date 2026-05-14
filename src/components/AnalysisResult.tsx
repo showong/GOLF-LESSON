@@ -32,33 +32,91 @@ const DIRECTION_COLOR: Record<ProgressDelta["direction"], string> = {
   new: "text-amber-700 bg-amber-50",
 };
 
+type Tone = "good" | "bad" | "drill";
+
+const TONE_STYLES: Record<
+  Tone,
+  { section: string; keyBg: string; keyBorder: string; badge: string; bullet: string }
+> = {
+  good: {
+    section: "border-emerald-200 bg-emerald-50/40",
+    keyBg: "bg-emerald-100",
+    keyBorder: "border-emerald-400",
+    badge: "bg-emerald-600 text-white",
+    bullet: "text-emerald-700",
+  },
+  bad: {
+    section: "border-rose-200 bg-rose-50/40",
+    keyBg: "bg-rose-100",
+    keyBorder: "border-rose-400",
+    badge: "bg-rose-600 text-white",
+    bullet: "text-rose-700",
+  },
+  drill: {
+    section: "border-sky-200 bg-sky-50/40",
+    keyBg: "bg-sky-100",
+    keyBorder: "border-sky-400",
+    badge: "bg-sky-600 text-white",
+    bullet: "text-sky-700",
+  },
+};
+
 function PointList({
   title,
   tone,
   items,
 }: {
   title: string;
-  tone: "good" | "bad" | "drill";
+  tone: Tone;
   items: SwingPoint[];
 }) {
-  const palette: Record<typeof tone, string> = {
-    good: "border-emerald-200 bg-emerald-50/50",
-    bad: "border-rose-200 bg-rose-50/50",
-    drill: "border-sky-200 bg-sky-50/50",
-  };
+  const s = TONE_STYLES[tone];
   return (
-    <div className={`rounded-xl border p-4 ${palette[tone]}`}>
+    <div className={`rounded-xl border p-4 ${s.section}`}>
       <h4 className="text-sm font-semibold text-fairway-900">{title}</h4>
       {items.length === 0 ? (
         <p className="mt-2 text-sm text-fairway-700/70">언급된 항목 없음</p>
       ) : (
-        <ul className="mt-2 space-y-2">
-          {items.map((p, i) => (
-            <li key={i} className="text-sm leading-relaxed">
-              <span className="font-medium">{p.title}</span>
-              {p.detail && <span className="text-fairway-700/80"> — {p.detail}</span>}
-            </li>
-          ))}
+        <ul className="mt-3 space-y-2">
+          {items.map((p, i) => {
+            const isKey = p.emphasis === "key";
+            return (
+              <li
+                key={i}
+                className={
+                  isKey
+                    ? `rounded-lg border-2 ${s.keyBorder} ${s.keyBg} p-3 shadow-sm`
+                    : "rounded-md px-2 py-1"
+                }
+              >
+                <div className="flex items-start gap-2">
+                  {isKey ? (
+                    <span
+                      className={`mt-0.5 inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${s.badge}`}
+                    >
+                      핵심
+                    </span>
+                  ) : (
+                    <span className={`mt-1 shrink-0 text-xs ${s.bullet}`}>•</span>
+                  )}
+                  <div className="text-sm leading-relaxed">
+                    <span
+                      className={
+                        isKey
+                          ? "font-bold text-fairway-900"
+                          : "font-medium text-fairway-900"
+                      }
+                    >
+                      {p.title}
+                    </span>
+                    {p.detail && (
+                      <span className="text-fairway-700/80"> — {p.detail}</span>
+                    )}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
@@ -68,6 +126,8 @@ function PointList({
 export default function AnalysisResult({ data }: Props) {
   const { record, delta, coach, headCoach, labels } = data;
   const a = record.analysis;
+  const confidence = Math.round(a.clubConfidence * 100);
+  const lowConfidence = a.clubConfidence < 0.6;
 
   return (
     <section className="space-y-5">
@@ -92,10 +152,57 @@ export default function AnalysisResult({ data }: Props) {
               ` · 지난번 ${gradeKR(delta.previous.grade)} LV-${delta.previous.level}`}
           </span>
         </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+          <span
+            className={`rounded px-2 py-0.5 ${
+              lowConfidence
+                ? "bg-amber-500/30 text-amber-100"
+                : "bg-fairway-700/60 text-fairway-100"
+            }`}
+          >
+            클럽 인식 신뢰도 {confidence}%
+          </span>
+          {a.clubCues.length > 0 && (
+            <span className="text-fairway-100/70">
+              · 근거: {a.clubCues.join(" / ")}
+            </span>
+          )}
+        </div>
+        {lowConfidence && (
+          <p className="mt-2 rounded bg-amber-500/20 px-2 py-1 text-[11px] text-amber-100">
+            스윙이 빨라 자동 인식 신뢰도가 낮습니다. 결과 화면 위쪽 업로드 폼에서
+            클럽을 직접 지정하면 더 정확한 코칭을 받을 수 있어요.
+          </p>
+        )}
+
         <p className="mt-3 text-xs text-fairway-100/70">
           판정 근거: {a.gradeRationale}
         </p>
       </div>
+
+      {(a.topFocus.detail || a.topFocus.why) && (
+        <div className="rounded-2xl border-2 border-amber-400 bg-gradient-to-br from-amber-50 to-amber-100 p-5 shadow-md">
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-amber-500 px-2.5 py-1 text-[10px] font-bold tracking-wider text-white">
+              오늘의 #1 포커스
+            </span>
+            <h3 className="text-base font-bold text-amber-900">
+              {a.topFocus.title}
+            </h3>
+          </div>
+          {a.topFocus.detail && (
+            <p className="mt-2 text-sm font-medium leading-relaxed text-amber-950">
+              {a.topFocus.detail}
+            </p>
+          )}
+          {a.topFocus.why && (
+            <p className="mt-1.5 text-xs leading-relaxed text-amber-800/90">
+              💡 {a.topFocus.why}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="rounded-2xl border border-fairway-100 bg-white p-6 shadow-sm">
         <div className="flex items-center gap-3">

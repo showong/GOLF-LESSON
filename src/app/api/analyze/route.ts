@@ -11,7 +11,8 @@ import {
 } from "@/lib/db";
 import { analyzeSwingVideo } from "@/lib/gemini";
 import { getCoach, HEAD_COACH } from "@/lib/coaches";
-import { CLUB_LABEL, GRADE_LABEL, type ClubType } from "@/lib/types";
+import { CLUB_LABEL, GRADE_LABEL } from "@/lib/types";
+import type { ClubType } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -27,6 +28,11 @@ export async function POST(req: Request) {
   const form = await req.formData();
   const nickname = String(form.get("nickname") ?? "").trim();
   const file = form.get("video");
+  const rawHint = String(form.get("clubHint") ?? "").trim();
+  const clubHint: ClubType | undefined =
+    rawHint === "driver" || rawHint === "iron" || rawHint === "approach"
+      ? rawHint
+      : undefined;
 
   if (!nickname) {
     return NextResponse.json({ error: "닉네임이 필요합니다." }, { status: 400 });
@@ -71,6 +77,7 @@ export async function POST(req: Request) {
       nickname: user.nickname,
       filePath: tmpPath,
       mimeType: file.type,
+      clubHint,
       history,
     });
 
