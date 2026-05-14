@@ -1,11 +1,13 @@
 "use client";
 
 import type { CoachPersona } from "@/lib/coaches";
-import type {
-  AnalysisRecord,
-  Grade,
-  ProgressDelta,
-  SwingPoint,
+import {
+  MECHANICS_LABEL,
+  type AnalysisRecord,
+  type Grade,
+  type MechanicsScore,
+  type ProgressDelta,
+  type SwingPoint,
 } from "@/lib/types";
 
 interface Props {
@@ -181,6 +183,11 @@ export default function AnalysisResult({ data }: Props) {
         </p>
       </div>
 
+      <MechanicsBreakdown
+        scores={a.mechanicsScores}
+        total={a.mechanicsTotal}
+      />
+
       {(a.topFocus.detail || a.topFocus.why) && (
         <div className="rounded-2xl border-2 border-amber-400 bg-gradient-to-br from-amber-50 to-amber-100 p-5 shadow-md">
           <div className="flex items-center gap-2">
@@ -236,4 +243,81 @@ export default function AnalysisResult({ data }: Props) {
 
 function gradeKR(g: Grade): string {
   return { beginner: "골린이", amateur: "아마추어", semipro: "세미프로", pro: "프로" }[g];
+}
+
+function scoreColor(s: number): string {
+  if (s >= 3) return "bg-emerald-500";
+  if (s >= 2) return "bg-sky-500";
+  if (s >= 1) return "bg-amber-500";
+  return "bg-rose-500";
+}
+
+function MechanicsBreakdown({
+  scores,
+  total,
+}: {
+  scores: MechanicsScore[];
+  total: number;
+}) {
+  const pct = Math.round((total / 24) * 100);
+  return (
+    <div className="rounded-2xl border border-fairway-100 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-fairway-900">
+            매커니즘 채점 (헤드코치)
+          </h3>
+          <p className="text-xs text-fairway-700/70">
+            8개 항목 × 0~3점 = 합계 {total} / 24점 ({pct}%) — 이 합계로
+            등급/단계가 결정됩니다.
+          </p>
+        </div>
+        <div className="rounded-lg bg-fairway-900 px-3 py-1.5 text-sm font-bold text-white">
+          {total} / 24
+        </div>
+      </div>
+
+      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-fairway-100">
+        <div
+          className="h-full bg-gradient-to-r from-rose-400 via-amber-400 to-emerald-500"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+        {scores.map((m) => (
+          <li
+            key={m.dim}
+            className="rounded-lg border border-fairway-100 px-3 py-2"
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-fairway-900">
+                {MECHANICS_LABEL[m.dim]}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="flex gap-0.5">
+                  {[0, 1, 2].map((i) => (
+                    <span
+                      key={i}
+                      className={`h-2 w-4 rounded-sm ${
+                        i < m.score ? scoreColor(m.score) : "bg-fairway-100"
+                      }`}
+                    />
+                  ))}
+                </span>
+                <span className="w-6 text-right text-xs font-bold text-fairway-900">
+                  {m.score}/3
+                </span>
+              </span>
+            </div>
+            {m.note && (
+              <p className="mt-1 text-[11px] leading-relaxed text-fairway-700/80">
+                {m.note}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
