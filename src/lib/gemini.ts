@@ -38,6 +38,24 @@ function apiKey(): string {
 }
 
 const RUBRIC = `
+[채점 인구 앵커 — 매우 중요]
+한국 일반 골퍼 분포는 대략 다음과 같습니다. 이 비율을 머릿속에 두고 채점하세요.
+  · 골린이(beginner): 약 60% — 입문 1년 이내 또는 헛스윙/뒷땅 빈번
+  · 아마추어(amateur): 약 32% — 주말 골퍼 다수, 100타~85타 수준
+  · 세미프로(semipro): 약 7% — 싱글 핸디캡, 70타대 안정
+  · 프로(pro): 약 1% — 투어 출전 가능 수준
+
+→ 평범한 주말 골퍼는 amateur LV-1~2가 정상입니다.
+→ "조금 잘 친다"는 인상이 들면 한 단계 낮춰 채점하세요.
+→ "꽤 잘 친다"가 amateur LV-3 정도. 진짜 semipro 이상은 분명한 기술적 정교함이 보여야 합니다.
+
+[3점은 거의 주지 않습니다 — 핵심]
+- 3점은 "이 동작만 떼어서 봐도 프로가 인정할 수준". 매우 신중히 부여.
+- 평범하지만 결함 없으면 1~2점이 정상. 평균 이상 + 결함 없음일 때만 2점.
+- 분명한 결함 = 1점, 명백한 문제 = 0점.
+- 한 영상에서 3점이 4개 이상이면 그 사람은 이미 프로 후보입니다.
+- 일반 골퍼는 8항목 평균 1.0~1.5 사이가 자연스럽습니다.
+
 [8개 매커니즘 항목 — 각 0~3점, 합계 0~24점. 보수적으로 매김]
 
 A) address (어드레스/셋업) [기본기 가중치 ★]
@@ -72,17 +90,25 @@ H) balance (밸런스·축 안정성) [기본기 가중치 ★]
    3=백스윙 우측축, 다운 좌측축 명확. 스웨이 없음 / 2=작은 스웨이/리버스 피벗 기미
    1=명확한 스웨이/머리 이동 / 0=축 무너짐
 
-[합계 → 등급/단계 매핑 — 코드에서 결정]
-0-1 beginner LV1 / 2-3 LV2 / 4-5 LV3
-6-7 amateur LV1 / 8-9 LV2 / 10-11 LV3
-12-13 semipro LV1 / 14-15 LV2 / 16-17 LV3
-18-19 pro LV1 / 20-21 LV2 / 22-24 LV3
+[합계 → 등급/단계 매핑 — 강화된 밴드, 코드에서 결정적으로 계산]
+0-2 beginner LV1 / 3-5 LV2 / 6-7 LV3
+8-9 amateur LV1 / 10-11 LV2 / 12-13 LV3
+14-15 semipro LV1 / 16-17 LV2 / 18-19 LV3
+20-21 pro LV1 / 22 LV2 / 23-24 LV3
 
-[일관성 규칙]
-- 같은 영상은 같은 점수가 나와야 함. 보고 있는 영상의 실제 동작 외에는 점수에 반영 금지.
-- 사용자의 이전 기록, 선입견, 동기부여 의도의 가산점 모두 절대 금지.
-- 영상에서 보이지 않는 항목은 보수적으로(중앙값 1점) 채우고 note에 한계 명시.
-- 기본기 4항목(★ 표시: address, takeaway, transition, balance)이 등급의 핵심.
+[하드 게이트 — 코드에서 강제 적용. 미달 시 자동 강등됨]
+- pro 등급: 8항목 모두 ≥2점 + 3점이 4개 이상 필요. 미달 시 semipro LV-3
+- semipro/pro: 기본기 4항목(★) 모두 ≥2점 필요. 미달 시 amateur LV-3
+- amateur: 8항목 중 ≥1점이 4개 이상 필요. 미달 시 beginner LV-3
+→ 합계가 높아도 기본기 한 항목이라도 1점이면 semipro/pro 절대 불가.
+→ 따라서 기본기 채점에 특히 엄격해야 합니다.
+
+[일관성·반인플레이션 규칙]
+- 같은 영상은 같은 점수가 나와야 함. 영상 외 어떤 정보도 점수에 반영 금지.
+- 사용자의 이전 기록, 선입견, 동기부여 가산점 모두 절대 금지.
+- 영상에서 보이지 않는 항목은 보수적으로 1점, note에 "관찰 한계" 명시.
+- 채점을 마친 뒤 한 번 더 검토: "내가 후하게 준 항목은 없는가?" 의심되면 한 단계 낮춤.
+- 기본기 4항목(★: address, takeaway, transition, balance)이 등급의 핵심.
 `;
 
 // ---------- Stage 1: 헤드코치 판정 ----------
@@ -91,23 +117,41 @@ const HEAD_JUDGE_PROMPT = `당신은 ${HEAD_COACH.name}입니다. ${HEAD_COACH.v
 
 [당신의 임무 — 단계 1/3: 클럽 인식 + 등급 판정]
 
-1) 클럽 자동 인식 (정확도가 코치 배정의 근거가 되므로 매우 중요)
-   다음 모든 단서를 종합해서 driver/iron/approach 중 하나로 판정합니다:
+1) 클럽 자동 인식 — 정형 관찰 → 단서 투표 → 분류
+   자유 형식 추론을 금지합니다. 반드시 아래 절차를 순서대로 따릅니다.
 
-   [정지 단서 — 어드레스 1~2초]
-   (a) 티 사용/높이  (b) 볼의 스탠스 내 위치  (c) 스탠스 폭
-   (d) 척추 기울기   (e) 클럽 길이             (f) 헤드 모양/크기
+   [1-A) 어드레스 정지 단서 (영상 시작 0~2초 사이 가장 정지된 프레임)]
+   다음 6개 항목을 정해진 enum 보기 중 하나로만 채웁니다. 보이지 않으면 "관찰 불가".
+   각 보기 옆 괄호는 그 보기가 가리키는 클럽입니다.
 
-   [동적 단서 — 스윙 중]
-   (g) 스윙 궤적 호의 크기  (h) 스윙 스피드  (i) 페이스 회전량
-   (j) 골퍼의 임팩트 자세(척추 각 변화, 체중 분포)
+     · tee:           "높은 티"(driver) | "낮은 티"(driver/iron) | "티 없음"(iron/approach) | "관찰 불가"
+     · ballPosition:  "앞발 안쪽"(driver) | "스탠스 중앙-약간 왼쪽"(iron) | "스탠스 중앙/뒤"(approach) | "관찰 불가"
+     · stanceWidth:   "어깨보다 넓음"(driver) | "어깨 너비"(iron) | "어깨보다 좁음"(approach) | "관찰 불가"
+     · spineAngle:    "거의 수직"(driver) | "중간 정도 숙임"(iron) | "많이 숙임"(approach) | "관찰 불가"
+     · clubLength:    "긴 편"(driver) | "중간"(iron) | "짧음"(approach) | "관찰 불가"
+     · headShape:     "큰 둥근 헤드"(driver) | "얇은 블레이드"(iron) | "누운 큰 로프트 면"(approach) | "관찰 불가"
 
-   판정 규칙:
-   - 정지+동적 단서 합쳐 4개 이상 같은 방향 → clubConfidence ≥ 0.85
-   - 3개 일치 → 0.7~0.85 / 2개 → 0.5~0.7 / 1개 이하 → < 0.5
-   - clubCues에는 실제로 관찰한 단서 3~5개를 짧게 한국어로 기록
-     (예: "큰 티 위 볼", "어깨보다 넓은 스탠스", "큰 호의 스윙 궤적", "헤드가 둥글고 큼")
-   - 사용자가 클럽을 직접 지정한 경우만 clubConfidence=1.0, clubCues=["사용자가 직접 지정함"]
+   [1-B) 동적 단서 (스윙 중)]
+     · swingArc:      "큰 호"(driver) | "중간"(iron) | "컴팩트한 작은 호"(approach) | "관찰 불가"
+     · swingTempo:    "느리고 부드러움"(driver) | "중간"(iron) | "짧고 빠름"(approach) | "관찰 불가"
+
+   [1-C) 단서 투표 — clubScores]
+   위 8개 단서가 각 클럽을 가리킨 횟수를 정확히 카운트해서 적습니다.
+   "관찰 불가"는 어디에도 카운트하지 않습니다.
+   예: { "driver": 4, "iron": 2, "approach": 0 }
+
+   [1-D) 분류 결정]
+   - clubType은 clubScores에서 가장 높은 클럽으로 결정합니다.
+   - clubConfidence:
+     · 1위가 5개↑ + 2위와 3개↑ 차이 → 0.85~0.95
+     · 1위가 3-4개 + 2위와 1-2개 차이 → 0.6~0.8
+     · 동률 또는 1개 차이, 또는 관찰 불가가 4개↑ → 0.3~0.5
+   - clubCues에는 실제 관찰된(관찰 불가가 아닌) 단서 3~5개를 짧게 적습니다.
+
+   [1-E) 사용자 지정 우선]
+   사용자가 클럽을 직접 지정한 경우 위 절차 결과는 무시:
+   clubType=지정값, clubConfidence=1.0, clubCues=["사용자가 직접 지정함"].
+   (clubObservations와 clubScores는 그대로 채워서 출력 — 참고용)
 
 2) 매커니즘 8항목 채점 (보수적 채점 원칙)
 ${RUBRIC}
@@ -119,6 +163,17 @@ ${RUBRIC}
 
 [출력 JSON — 이 형식만, 코드펜스/설명 금지]
 {
+  "clubObservations": {
+    "tee":           "높은 티" | "낮은 티" | "티 없음" | "관찰 불가",
+    "ballPosition":  "앞발 안쪽" | "스탠스 중앙-약간 왼쪽" | "스탠스 중앙/뒤" | "관찰 불가",
+    "stanceWidth":   "어깨보다 넓음" | "어깨 너비" | "어깨보다 좁음" | "관찰 불가",
+    "spineAngle":    "거의 수직" | "중간 정도 숙임" | "많이 숙임" | "관찰 불가",
+    "clubLength":    "긴 편" | "중간" | "짧음" | "관찰 불가",
+    "headShape":     "큰 둥근 헤드" | "얇은 블레이드" | "누운 큰 로프트 면" | "관찰 불가",
+    "swingArc":      "큰 호" | "중간" | "컴팩트한 작은 호" | "관찰 불가",
+    "swingTempo":    "느리고 부드러움" | "중간" | "짧고 빠름" | "관찰 불가"
+  },
+  "clubScores": { "driver": number, "iron": number, "approach": number },
   "clubType": "driver" | "iron" | "approach",
   "clubConfidence": number,
   "clubCues": [string, ...],
@@ -274,6 +329,8 @@ interface HeadJudgement {
   clubType: ClubType;
   clubConfidence: number;
   clubCues: string[];
+  clubObservations?: Record<string, string>;
+  clubScores?: Record<ClubType, number>;
   mechanicsScores: MechanicsScore[];
   gradeRationale: string;
 }
@@ -448,11 +505,10 @@ export async function analyzeSwingVideo(
   try {
     // === Stage 1: 헤드코치 판정 ===
     const judgement = await runHeadJudge(file, input.clubHint);
-    const mechanicsTotal = judgement.mechanicsScores.reduce(
-      (s, m) => s + m.score,
-      0,
+    // 점수 → 등급/단계는 코드에서 결정적으로 매핑 + 하드 게이트 적용
+    const { grade, level, total: mechanicsTotal, gateNote } = scoreToGradeLevel(
+      judgement.mechanicsScores,
     );
-    const { grade, level } = scoreToGradeLevel(mechanicsTotal);
     const coach = COACHES[grade];
 
     // === Stage 2 + 3: 코치 티칭 ↔ 헤드코치 리뷰 루프 ===
@@ -479,13 +535,19 @@ export async function analyzeSwingVideo(
       throw new Error("코치 분석을 생성하지 못했습니다.");
     }
 
+    const rationale = [judgement.gradeRationale, gateNote ?? ""]
+      .filter(Boolean)
+      .join(" / ");
+
     return {
       clubType: judgement.clubType,
       clubConfidence: judgement.clubConfidence,
       clubCues: judgement.clubCues,
+      clubObservations: judgement.clubObservations,
+      clubScores: judgement.clubScores,
       grade,
       level,
-      gradeRationale: judgement.gradeRationale,
+      gradeRationale: rationale,
       mechanicsScores: judgement.mechanicsScores,
       mechanicsTotal,
       topFocus: coachOutput.topFocus,
@@ -526,19 +588,53 @@ async function runHeadJudge(
   const obj = parseJson(result.response.text()) as Record<string, unknown>;
 
   const allowedClubs: ClubType[] = ["driver", "iron", "approach"];
-  const clubType = (allowedClubs.includes(obj.clubType as ClubType)
+
+  // 1) 정형 관찰 표 + 투표 점수 추출
+  const observations = (obj.clubObservations ?? null) as Record<string, string> | null;
+  const scoresRaw = (obj.clubScores ?? {}) as Record<string, unknown>;
+  const voteScores: Record<ClubType, number> = {
+    driver: Math.max(0, Math.round(Number(scoresRaw.driver ?? 0))),
+    iron: Math.max(0, Math.round(Number(scoresRaw.iron ?? 0))),
+    approach: Math.max(0, Math.round(Number(scoresRaw.approach ?? 0))),
+  };
+  const voteSum = voteScores.driver + voteScores.iron + voteScores.approach;
+  const voteWinner = (Object.entries(voteScores) as [ClubType, number][])
+    .sort((a, b) => b[1] - a[1])[0]?.[0] as ClubType | undefined;
+
+  // 2) 클럽 결정: 사용자 지정 > 투표 1위 > Gemini 선언 순
+  let clubType: ClubType = (allowedClubs.includes(obj.clubType as ClubType)
     ? (obj.clubType as ClubType)
     : "iron") as ClubType;
+  if (voteWinner && voteSum >= 3 && clubType !== voteWinner) {
+    // Gemini의 분류가 자기 투표와 모순되면 투표 1위로 강제 교정
+    clubType = voteWinner;
+  }
+  if (clubHint) clubType = clubHint;
+
+  // 3) 신뢰도: 사용자 지정 시 1.0, 그 외 투표 마진으로 재계산
+  let clubConfidence: number;
+  if (clubHint) {
+    clubConfidence = 1;
+  } else if (voteSum >= 3) {
+    const sorted = Object.values(voteScores).sort((a, b) => b - a);
+    const margin = sorted[0] - sorted[1];
+    if (voteSum >= 5 && margin >= 3) clubConfidence = 0.9;
+    else if (voteSum >= 3 && margin >= 1) clubConfidence = 0.7;
+    else clubConfidence = 0.45;
+  } else {
+    clubConfidence = Math.max(0, Math.min(1, Number(obj.clubConfidence ?? 0.5)));
+  }
+
   const cuesRaw = obj.clubCues;
   const clubCues = Array.isArray(cuesRaw)
     ? cuesRaw.map((c) => String(c).trim()).filter(Boolean).slice(0, 6)
     : [];
   return {
-    clubType: clubHint ?? clubType,
-    clubConfidence: clubHint
-      ? 1
-      : Math.max(0, Math.min(1, Number(obj.clubConfidence ?? 0.6))),
+    clubType,
+    clubConfidence,
     clubCues: clubHint ? ["사용자가 직접 지정함"] : clubCues,
+    clubObservations: observations ?? undefined,
+    clubScores: voteSum > 0 ? voteScores : undefined,
     mechanicsScores: normalizeMechanics(obj.mechanicsScores),
     gradeRationale: String(obj.gradeRationale ?? "").trim(),
   };

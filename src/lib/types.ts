@@ -81,6 +81,10 @@ export interface SwingAnalysis {
   clubType: ClubType;
   clubConfidence: number;
   clubCues: string[];
+  /** 헤드코치가 채운 정형 관찰 표 (클럽 인식 단서, 디버깅·투명성용) */
+  clubObservations?: Record<string, string>;
+  /** 단서 투표 점수: { driver, iron, approach } */
+  clubScores?: Record<ClubType, number>;
   grade: Grade;
   level: Level;
   gradeRationale: string;
@@ -107,29 +111,65 @@ export interface AnalysisRecord {
 }
 
 /**
- * 8개 항목 × 0~3점 = 0~24점. 점수를 등급/단계로 결정적으로 매핑한다.
- * 같은 점수면 항상 같은 등급/단계가 나오도록 보장한다.
+ * 8개 항목 × 0~3점 = 0~24점.
+ *
+ * [강화된 매핑 — 너무 후한 등급 부여 방지]
+ *  - 등급 밴드를 한 단계씩 위로 push (amateur는 8점부터, semipro는 14점부터, pro는 20점부터)
+ *  - 하드 게이트로 핵심 조건 미달 시 자동 강등:
+ *    · pro: 8항목 모두 ≥2점 + 3점이 4개 이상 필요. 미달 시 semipro LV-3
+ *    · semipro/pro: 기본기 4항목(★) 모두 ≥2점 필요. 미달 시 amateur LV-3
+ *    · amateur: 8항목 중 ≥1점이 4개 이상 필요. 미달 시 beginner LV-3
+ *  - 합계가 높아도 기본기 한 항목이라도 1점이면 semipro/pro 절대 불가.
  */
-export function scoreToGradeLevel(total: number): { grade: Grade; level: Level } {
-  const t = Math.max(0, Math.min(24, Math.round(total)));
-  // beginner 0-5, amateur 6-11, semipro 12-17, pro 18-24
-  // 각 등급 내부에서 3단계로 나눔
-  const buckets: { grade: Grade; min: number; max: number; level: Level }[] = [
-    { grade: "beginner", min: 0,  max: 1,  level: 1 },
-    { grade: "beginner", min: 2,  max: 3,  level: 2 },
-    { grade: "beginner", min: 4,  max: 5,  level: 3 },
-    { grade: "amateur",  min: 6,  max: 7,  level: 1 },
-    { grade: "amateur",  min: 8,  max: 9,  level: 2 },
-    { grade: "amateur",  min: 10, max: 11, level: 3 },
-    { grade: "semipro",  min: 12, max: 13, level: 1 },
-    { grade: "semipro",  min: 14, max: 15, level: 2 },
-    { grade: "semipro",  min: 16, max: 17, level: 3 },
-    { grade: "pro",      min: 18, max: 19, level: 1 },
-    { grade: "pro",      min: 20, max: 21, level: 2 },
-    { grade: "pro",      min: 22, max: 24, level: 3 },
-  ];
-  const b = buckets.find((b) => t >= b.min && t <= b.max)!;
-  return { grade: b.grade, level: b.level };
+export function scoreToGradeLevel(
+  scores: MechanicsScore[],
+): { grade: Grade; level: Level; total: number; gateNote?: string } {
+  const total = scores.reduce((s, m) => s + m.score, 0);
+
+  const fundamentals: MechanicsDim[] = ["address", "takeaway", "transition", "balance"];
+  const fundOk = scores
+    .filter((s) => fundamentals.includes(s.dim))
+    .every((s) => s.score >= 2);
+  const allDimsOk = scores.every((s) => s.score >= 2);
+  const numThrees = scores.filter((s) => s.score === 3).length;
+  const numAtLeast1 = scores.filter((s) => s.score >= 1).length;
+
+  // 1) 합계로 기본 등급 산출 (강화된 밴드)
+  let grade: Grade;
+  let level: Level;
+  if (total <= 7) {
+    grade = "beginner";
+    level = (total <= 2 ? 1 : total <= 5 ? 2 : 3) as Level;
+  } else if (total <= 13) {
+    grade = "amateur";
+    level = (total <= 9 ? 1 : total <= 11 ? 2 : 3) as Level;
+  } else if (total <= 19) {
+    grade = "semipro";
+    level = (total <= 15 ? 1 : total <= 17 ? 2 : 3) as Level;
+  } else {
+    grade = "pro";
+    level = (total <= 21 ? 1 : total <= 22 ? 2 : 3) as Level;
+  }
+
+  // 2) 하드 게이트 (위에서 아래로 검사)
+  let gateNote: string | undefined;
+  if (grade === "pro" && (!allDimsOk || numThrees < 4)) {
+    grade = "semipro";
+    level = 3;
+    gateNote = "프로 게이트 미달(8항목 ≥2 + 3점 4개↑ 필요). 세미프로 LV-3로 조정.";
+  }
+  if ((grade === "pro" || grade === "semipro") && !fundOk) {
+    grade = "amateur";
+    level = 3;
+    gateNote = "기본기 게이트 미달(★ 4항목 모두 ≥2 필요). 아마추어 LV-3로 조정.";
+  }
+  if (grade === "amateur" && numAtLeast1 < 4) {
+    grade = "beginner";
+    level = 3;
+    gateNote = "아마추어 게이트 미달(≥1점 4개↑ 필요). 골린이 LV-3로 조정.";
+  }
+
+  return { grade, level, total, gateNote };
 }
 
 export interface ProgressDelta {

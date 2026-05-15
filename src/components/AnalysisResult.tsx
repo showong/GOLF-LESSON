@@ -184,6 +184,12 @@ export default function AnalysisResult({ data }: Props) {
         </p>
       </div>
 
+      <ClubObservationCard
+        observations={a.clubObservations}
+        scores={a.clubScores}
+        clubType={a.clubType}
+      />
+
       <MechanicsBreakdown
         scores={a.mechanicsScores}
         total={a.mechanicsTotal}
@@ -408,6 +414,95 @@ function MechanicsBreakdown({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+const OBSERVATION_LABELS: Record<string, string> = {
+  tee: "티 사용",
+  ballPosition: "볼 위치",
+  stanceWidth: "스탠스 폭",
+  spineAngle: "척추 각",
+  clubLength: "클럽 길이",
+  headShape: "헤드 모양",
+  swingArc: "스윙 호",
+  swingTempo: "스윙 템포",
+};
+
+const CLUB_KR: Record<string, string> = {
+  driver: "드라이버",
+  iron: "아이언",
+  approach: "어프로치",
+};
+
+function ClubObservationCard({
+  observations,
+  scores,
+  clubType,
+}: {
+  observations?: Record<string, string>;
+  scores?: Record<string, number>;
+  clubType: string;
+}) {
+  if (!observations && !scores) return null;
+  return (
+    <div className="rounded-2xl border border-fairway-100 bg-white p-5 shadow-sm">
+      <h3 className="text-sm font-semibold text-fairway-900">
+        헤드코치의 관찰 (클럽 인식 근거)
+      </h3>
+      <p className="mt-1 text-xs text-fairway-700/70">
+        영상에서 추출한 8개 단서를 모은 표예요. 단서 투표에서 가장 많은 표를 받은
+        클럽이 인식 결과가 됩니다.
+      </p>
+
+      {observations && (
+        <ul className="mt-3 grid gap-1.5 sm:grid-cols-2">
+          {Object.entries(OBSERVATION_LABELS).map(([k, label]) => {
+            const v = observations[k] ?? "관찰 불가";
+            const dim = v === "관찰 불가";
+            return (
+              <li
+                key={k}
+                className={`flex items-center justify-between rounded-md border px-2.5 py-1.5 text-xs ${
+                  dim
+                    ? "border-dashed border-fairway-100 text-fairway-700/50"
+                    : "border-fairway-100 text-fairway-900"
+                }`}
+              >
+                <span className="font-medium">{label}</span>
+                <span>{v}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {scores && (
+        <div className="mt-4">
+          <div className="mb-1 text-xs font-medium text-fairway-700/80">
+            단서 투표 결과
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {(["driver", "iron", "approach"] as const).map((c) => {
+              const cnt = scores[c] ?? 0;
+              const isWinner = c === clubType;
+              return (
+                <div
+                  key={c}
+                  className={`rounded-md border px-2 py-1.5 text-center text-xs ${
+                    isWinner
+                      ? "border-fairway-700 bg-fairway-50 font-bold text-fairway-900"
+                      : "border-fairway-100 text-fairway-700/70"
+                  }`}
+                >
+                  <div>{CLUB_KR[c]}</div>
+                  <div className="mt-0.5 text-base font-bold">{cnt}표</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
