@@ -7,6 +7,7 @@ import {
   type Grade,
   type MechanicsScore,
   type ProgressDelta,
+  type ReviewResult,
   type SwingPoint,
 } from "@/lib/types";
 
@@ -188,6 +189,8 @@ export default function AnalysisResult({ data }: Props) {
         total={a.mechanicsTotal}
       />
 
+      <ReviewBadge review={a.review} coachName={coach.name} headCoachName={headCoach.name} />
+
       {(a.topFocus.detail || a.topFocus.why) && (
         <div className="rounded-2xl border-2 border-amber-400 bg-gradient-to-br from-amber-50 to-amber-100 p-5 shadow-md">
           <div className="flex items-center gap-2">
@@ -250,6 +253,93 @@ function scoreColor(s: number): string {
   if (s >= 2) return "bg-sky-500";
   if (s >= 1) return "bg-amber-500";
   return "bg-rose-500";
+}
+
+function ReviewBadge({
+  review,
+  coachName,
+  headCoachName,
+}: {
+  review: ReviewResult;
+  coachName: string;
+  headCoachName: string;
+}) {
+  const passed = review.passed;
+  const palette = passed
+    ? {
+        ring: "border-emerald-300",
+        bg: "bg-emerald-50",
+        badge: "bg-emerald-600",
+        title: "text-emerald-900",
+      }
+    : {
+        ring: "border-amber-300",
+        bg: "bg-amber-50",
+        badge: "bg-amber-600",
+        title: "text-amber-900",
+      };
+  return (
+    <div className={`rounded-2xl border-2 ${palette.ring} ${palette.bg} p-4`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span
+            className={`rounded-full px-2.5 py-1 text-[10px] font-bold tracking-wider text-white ${palette.badge}`}
+          >
+            {passed ? "헤드코치 승인" : "기준 미달 — 최종본 전달"}
+          </span>
+          <span className={`text-sm font-semibold ${palette.title}`}>
+            {headCoachName} 리뷰: {review.score}/100점
+          </span>
+        </div>
+        <span className="text-[11px] text-fairway-700/70">
+          {coachName} · 시도 {review.attemptCount}회
+        </span>
+      </div>
+      <div className="mt-3 grid grid-cols-5 gap-2 text-[11px]">
+        <ReviewCell label="등급 적합" value={review.breakdown.gradeMatch} max={30} />
+        <ReviewCell label="클럽 특화" value={review.breakdown.clubSpecific} max={20} />
+        <ReviewCell
+          label="매커니즘 일치"
+          value={review.breakdown.mechanicsAlignment}
+          max={20}
+        />
+        <ReviewCell label="드릴 적합" value={review.breakdown.drillFit} max={20} />
+        <ReviewCell label="간결·임팩트" value={review.breakdown.conciseness} max={10} />
+      </div>
+      {!passed && review.feedback && (
+        <p className="mt-3 rounded-md bg-white/60 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+          <strong>헤드코치 메모.</strong> {review.feedback}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ReviewCell({
+  label,
+  value,
+  max,
+}: {
+  label: string;
+  value: number;
+  max: number;
+}) {
+  const pct = Math.round((value / max) * 100);
+  const tone =
+    pct >= 90 ? "bg-emerald-500" : pct >= 70 ? "bg-sky-500" : pct >= 50 ? "bg-amber-500" : "bg-rose-500";
+  return (
+    <div className="rounded-md border border-fairway-100 bg-white px-2 py-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-fairway-700/80">{label}</span>
+        <span className="font-bold text-fairway-900">
+          {value}/{max}
+        </span>
+      </div>
+      <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-fairway-100">
+        <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
 }
 
 function MechanicsBreakdown({

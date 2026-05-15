@@ -61,6 +61,22 @@ export interface SwingFocus {
   why: string;
 }
 
+export interface ReviewBreakdown {
+  gradeMatch: number;
+  clubSpecific: number;
+  mechanicsAlignment: number;
+  drillFit: number;
+  conciseness: number;
+}
+
+export interface ReviewResult {
+  score: number;
+  passed: boolean;
+  feedback: string;
+  attemptCount: number;
+  breakdown: ReviewBreakdown;
+}
+
 export interface SwingAnalysis {
   clubType: ClubType;
   clubConfidence: number;
@@ -76,6 +92,7 @@ export interface SwingAnalysis {
   drills: SwingPoint[];
   coachMessage: string;
   oneLineSummary: string;
+  review: ReviewResult;
 }
 
 export interface AnalysisRecord {
