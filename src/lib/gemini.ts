@@ -7,6 +7,7 @@ import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import fs from "node:fs";
 import path from "node:path";
 import { COACHES, HEAD_COACH, type CoachPersona } from "./coaches";
+import { extractKeyFrames, type ExtractedFrame } from "./frames";
 import {
   CLUB_LABEL,
   GRADE_LABEL,
@@ -116,6 +117,18 @@ H) balance (밸런스·축 안정성) [기본기 가중치 ★]
 const HEAD_JUDGE_PROMPT = `당신은 ${HEAD_COACH.name}입니다. ${HEAD_COACH.voiceGuide}
 
 [당신의 임무 — 단계 1/3: 클럽 인식 + 등급 판정]
+
+[입력 형식]
+이번 요청에는 영상 외에 **5장의 추출된 정지 프레임** 이 함께 제공됩니다.
+영상의 10/30/50/70/90% 지점에서 ffmpeg로 뽑은 720px 정지 이미지로,
+각각 어드레스 / 백스윙 중간 / 탑·전환 / 임팩트 부근 / 피니시에 가까운 순간입니다.
+
+- 클럽 인식의 정적 단서(티, 볼 위치, 스탠스, 척추각, 클럽 길이, 헤드 모양)는
+  **첫 번째(어드레스) 정지 프레임을 최우선으로** 참조하세요. 영상 프레임 샘플링보다
+  훨씬 또렷합니다.
+- 탑 포지션과 임팩트 자세는 3번째·4번째 프레임을 참고하세요.
+- 동적 단서(스윙 호, 템포, 페이스 회전)는 영상으로 확인합니다.
+- 정지 프레임에서 보이는 정보를 영상보다 더 신뢰하세요.
 
 1) 클럽 자동 인식 — 정형 관찰 → 단서 투표 → 분류
    자유 형식 추론을 금지합니다. 반드시 아래 절차를 순서대로 따릅니다.
@@ -484,10 +497,18 @@ export async function analyzeSwingVideo(
   if (!fs.existsSync(input.filePath)) {
     throw new Error(`업로드된 파일을 찾을 수 없습니다: ${input.filePath}`);
   }
-  const uploadResult = await fileManager.uploadFile(input.filePath, {
-    mimeType: input.mimeType,
-    displayName: path.basename(input.filePath),
-  });
+  // 업로드와 키 프레임 추출을 병렬로 진행해 지연 절감.
+  const [uploadResult, frames] = await Promise.all([
+    fileManager.uploadFile(input.filePath, {
+      mimeType: input.mimeType,
+      displayName: path.basename(input.filePath),
+    }),
+    extractKeyFrames(input.filePath).catch((e: unknown) => {
+      // ffmpeg 실패해도 영상으로 분석은 가능하니 빈 배열로 폴백.
+      console.warn("키 프레임 추출 실패, 영상만으로 진행:", e);
+      return [] as ExtractedFrame[];
+    }),
+  ]);
 
   let file = await fileManager.getFile(uploadResult.file.name);
   const start = Date.now();
@@ -503,8 +524,8 @@ export async function analyzeSwingVideo(
   }
 
   try {
-    // === Stage 1: 헤드코치 판정 ===
-    const judgement = await runHeadJudge(file, input.clubHint);
+    // === Stage 1: 헤드코치 판정 (영상 + 키 프레임) ===
+    const judgement = await runHeadJudge(file, frames, input.clubHint);
     // 점수 → 등급/단계는 코드에서 결정적으로 매핑 + 하드 게이트 적용
     const { grade, level, total: mechanicsTotal, gateNote } = scoreToGradeLevel(
       judgement.mechanicsScores,
@@ -567,6 +588,7 @@ export async function analyzeSwingVideo(
 
 async function runHeadJudge(
   file: { uri: string; mimeType: string },
+  frames: ExtractedFrame[],
   clubHint?: ClubType,
 ): Promise<HeadJudgement> {
   const model = makeModel(HEAD_JUDGE_PROMPT);
@@ -574,17 +596,28 @@ async function runHeadJudge(
     ? `[사용자 지정 클럽] "${CLUB_LABEL[clubHint]}"로 고정. clubType="${clubHint}", clubConfidence=1.0, clubCues=["사용자가 직접 지정함"].`
     : `[클럽 자동 인식 필요] 정지+동적 단서를 모두 활용해 정확히 판정하세요.`;
 
-  const contents: Content[] = [
+  const parts: Content["parts"] = [
+    { text: hintBlock },
     {
-      role: "user",
-      parts: [
-        { text: hintBlock },
-        { text: "아래 영상을 분석해 헤드코치 판정 JSON만 출력하세요." },
-        { fileData: { mimeType: file.mimeType, fileUri: file.uri } },
-      ],
+      text:
+        `[추출된 정지 프레임 ${frames.length}장 — 영상 ${frames
+          .map((f) => f.phase)
+          .join(" → ")} 순서]\n` +
+        "어드레스의 정적 단서(클럽 인식)는 이 정지 프레임을 우선 사용하세요.",
     },
   ];
-  const result = await model.generateContent({ contents });
+  for (const f of frames) {
+    parts.push({ text: `--- ${f.label} ---` });
+    parts.push({ inlineData: { mimeType: f.mimeType, data: f.base64 } });
+  }
+  parts.push({
+    text: "위 정지 프레임과 아래 영상을 함께 보고 헤드코치 판정 JSON만 출력하세요.",
+  });
+  parts.push({ fileData: { mimeType: file.mimeType, fileUri: file.uri } });
+
+  const result = await model.generateContent({
+    contents: [{ role: "user", parts }],
+  });
   const obj = parseJson(result.response.text()) as Record<string, unknown>;
 
   const allowedClubs: ClubType[] = ["driver", "iron", "approach"];

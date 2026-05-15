@@ -117,8 +117,8 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       )}
       {busy && (
         <div className="mt-3 text-xs text-fairway-700/70">
-          영상 업로드 후 Gemini가 어드레스 단서와 스윙 메커니즘을 분석하고 있어요.
-          30초~1분 정도 걸릴 수 있어요.
+          영상 업로드 → 어드레스/탑/임팩트/피니시 키 프레임 추출 → 헤드코치 판정 →
+          전담 코치 분석 → 헤드코치 리뷰 순으로 진행돼요. 30초~1분 정도 걸릴 수 있어요.
         </div>
       )}
     </section>

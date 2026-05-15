@@ -24,6 +24,8 @@
 - **프레임워크**: Next.js 14 (App Router) + TypeScript + Tailwind CSS
 - **AI**: Google Gemini 3.1 (`@google/generative-ai`) — File API로 영상 업로드
   후 멀티모달 분석
+- **영상 전처리**: ffmpeg (`ffmpeg-static`) — 어드레스/탑/임팩트/피니시 5개 키 프레임
+  추출 후 헤드코치 판정 단계에 정지 이미지로 함께 전달 (클럽 인식 정확도 ↑)
 - **데이터**: SQLite (`better-sqlite3`) — 사용자/분석 요약을 로컬 파일에 저장
 - **UI 언어**: 한국어
 
