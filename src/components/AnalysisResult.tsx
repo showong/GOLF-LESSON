@@ -166,6 +166,14 @@ export default function AnalysisResult({ data }: Props) {
           >
             클럽 인식 신뢰도 {confidence}%
           </span>
+          {a.views && a.views.length > 0 && (
+            <span className="rounded bg-fairway-700/60 px-2 py-0.5 text-fairway-100">
+              분석 시점:{" "}
+              {a.views
+                .map((v) => (v === "side" ? "측면샷" : "정면샷"))
+                .join(" + ")}
+            </span>
+          )}
           {a.clubCues.length > 0 && (
             <span className="text-fairway-100/70">
               · 근거: {a.clubCues.join(" / ")}

@@ -13,6 +13,7 @@ import {
   GRADE_LABEL,
   MECHANICS_DIMENSIONS,
   MECHANICS_LABEL,
+  VIDEO_VIEW_LABEL,
   scoreToGradeLevel,
 } from "./types";
 import type {
@@ -26,6 +27,7 @@ import type {
   SwingAnalysis,
   SwingFocus,
   SwingPoint,
+  VideoView,
 } from "./types";
 
 const MODEL = process.env.GEMINI_MODEL ?? "gemini-3.1-flash-lite";
@@ -118,17 +120,28 @@ const HEAD_JUDGE_PROMPT = `당신은 ${HEAD_COACH.name}입니다. ${HEAD_COACH.v
 
 [당신의 임무 — 단계 1/3: 클럽 인식 + 등급 판정]
 
-[입력 형식]
-이번 요청에는 영상 외에 **5장의 추출된 정지 프레임** 이 함께 제공됩니다.
-영상의 10/30/50/70/90% 지점에서 ffmpeg로 뽑은 720px 정지 이미지로,
-각각 어드레스 / 백스윙 중간 / 탑·전환 / 임팩트 부근 / 피니시에 가까운 순간입니다.
+[입력 형식 — 1~2개 시점의 영상이 제공될 수 있음]
+이번 요청에는 측면샷(side) 또는 정면샷(front), 혹은 **둘 다** 제공될 수 있습니다.
+각 영상마다 ffmpeg로 뽑은 5장의 720px 정지 프레임(영상 10/30/50/70/90% 지점)이
+함께 옵니다. 프레임 라벨에 "측면샷" / "정면샷"이 명시되어 있습니다.
 
-- 클럽 인식의 정적 단서(티, 볼 위치, 스탠스, 척추각, 클럽 길이, 헤드 모양)는
-  **첫 번째(어드레스) 정지 프레임을 최우선으로** 참조하세요. 영상 프레임 샘플링보다
-  훨씬 또렷합니다.
-- 탑 포지션과 임팩트 자세는 3번째·4번째 프레임을 참고하세요.
-- 동적 단서(스윙 호, 템포, 페이스 회전)는 영상으로 확인합니다.
-- 정지 프레임에서 보이는 정보를 영상보다 더 신뢰하세요.
+[시점별 강점 — 분석에 적극 활용]
+- **측면샷(side)**: 스윙 플레인, 척추 각, 클럽 길이, 어택 앵글, 탑 포지션, 임팩트 자세,
+  피니시 균형 같은 X-Z 평면(앞뒤 깊이 + 상하) 정보에 강함.
+- **정면샷(front)**: 정렬, 머리 움직임, 스웨이/축 안정성, 스탠스 폭, 체중 이동,
+  좌우 어깨 회전 같은 X-Y 평면(좌우 + 상하) 정보에 강함.
+
+[멀티 시점 분석 규칙]
+- 클럽 인식(정적 단서): 측면샷이 있으면 클럽 길이/헤드 모양/볼-스탠스 위치는 측면샷 우선.
+  스탠스 폭은 정면샷이 더 잘 보임. 두 시점의 단서를 모두 단서 투표에 반영하세요.
+- 매커니즘 채점:
+  · address, takeaway, top, transition, impact, finish → 측면샷 우선
+  · balance(스웨이), 정렬 관련 관찰 → 정면샷 우선
+  · 두 시점이 충돌하면 측면샷을 신뢰하되, 정면샷에서만 보이는 명백한 결함(예: 큰 스웨이)은
+    반드시 반영합니다.
+- 동적 단서(스윙 호, 템포, 페이스 회전)는 영상(파일)으로 확인.
+- 한 시점만 있어도 정상 동작하지만, note에 "정면 미제공으로 스웨이 단정 어려움" 같은
+  관찰 한계를 명시하세요.
 
 1) 클럽 자동 인식 — 정형 관찰 → 단서 투표 → 분류
    자유 형식 추론을 금지합니다. 반드시 아래 절차를 순서대로 따릅니다.
@@ -461,10 +474,16 @@ function normalizeReview(raw: unknown, attempt: number): ReviewResult {
 
 // ---------- 외부 API ----------
 
-export interface AnalyzeInput {
-  nickname: string;
+export interface AnalyzeVideo {
+  view: VideoView;
   filePath: string;
   mimeType: string;
+}
+
+export interface AnalyzeInput {
+  nickname: string;
+  /** 분석할 영상 1~2개. 측면샷 권장, 정면샷 선택. 둘 다 있으면 더 정확. */
+  videos: AnalyzeVideo[];
   clubHint?: ClubType;
   history: {
     createdAt: string;
@@ -493,40 +512,64 @@ function makeModel(systemInstruction: string) {
 export async function analyzeSwingVideo(
   input: AnalyzeInput,
 ): Promise<SwingAnalysis> {
-  const fileManager = new GoogleAIFileManager(apiKey());
-  if (!fs.existsSync(input.filePath)) {
-    throw new Error(`업로드된 파일을 찾을 수 없습니다: ${input.filePath}`);
+  if (!input.videos || input.videos.length === 0) {
+    throw new Error("분석할 영상이 없습니다.");
   }
-  // 업로드와 키 프레임 추출을 병렬로 진행해 지연 절감.
-  const [uploadResult, frames] = await Promise.all([
-    fileManager.uploadFile(input.filePath, {
-      mimeType: input.mimeType,
-      displayName: path.basename(input.filePath),
-    }),
-    extractKeyFrames(input.filePath).catch((e: unknown) => {
-      // ffmpeg 실패해도 영상으로 분석은 가능하니 빈 배열로 폴백.
-      console.warn("키 프레임 추출 실패, 영상만으로 진행:", e);
-      return [] as ExtractedFrame[];
-    }),
-  ]);
-
-  let file = await fileManager.getFile(uploadResult.file.name);
-  const start = Date.now();
-  while (file.state === FileState.PROCESSING) {
-    if (Date.now() - start > 120_000) {
-      throw new Error("영상 전처리가 너무 오래 걸려 중단했습니다.");
+  for (const v of input.videos) {
+    if (!fs.existsSync(v.filePath)) {
+      throw new Error(`업로드된 파일을 찾을 수 없습니다: ${v.filePath}`);
     }
-    await new Promise((r) => setTimeout(r, 2000));
-    file = await fileManager.getFile(uploadResult.file.name);
   }
-  if (file.state !== FileState.ACTIVE) {
-    throw new Error(`Gemini 파일 상태가 비정상입니다: ${file.state}`);
+
+  const fileManager = new GoogleAIFileManager(apiKey());
+
+  // 각 영상마다 업로드 + 키 프레임 추출을 병렬로.
+  const uploads = await Promise.all(
+    input.videos.map(async (v) => {
+      const [uploadResult, frames] = await Promise.all([
+        fileManager.uploadFile(v.filePath, {
+          mimeType: v.mimeType,
+          displayName: `${v.view}-${path.basename(v.filePath)}`,
+        }),
+        extractKeyFrames(v.filePath, v.view).catch((e: unknown) => {
+          console.warn(`키 프레임 추출 실패 (${v.view}), 영상만으로 진행:`, e);
+          return [] as ExtractedFrame[];
+        }),
+      ]);
+      return { view: v.view, uploadResult, frames };
+    }),
+  );
+
+  // ACTIVE 상태가 될 때까지 모든 파일 대기.
+  const start = Date.now();
+  for (const u of uploads) {
+    let file = await fileManager.getFile(u.uploadResult.file.name);
+    while (file.state === FileState.PROCESSING) {
+      if (Date.now() - start > 180_000) {
+        throw new Error("영상 전처리가 너무 오래 걸려 중단했습니다.");
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+      file = await fileManager.getFile(u.uploadResult.file.name);
+    }
+    if (file.state !== FileState.ACTIVE) {
+      throw new Error(`Gemini 파일 상태가 비정상입니다(${u.view}): ${file.state}`);
+    }
+    // ACTIVE 상태의 uri/mimeType으로 갱신
+    u.uploadResult.file.uri = file.uri;
+    u.uploadResult.file.mimeType = file.mimeType;
   }
+
+  const uploadedVideos: UploadedVideo[] = uploads.map((u) => ({
+    view: u.view,
+    uri: u.uploadResult.file.uri,
+    mimeType: u.uploadResult.file.mimeType,
+  }));
+  const allFrames = uploads.flatMap((u) => u.frames);
+  const viewsUsed = Array.from(new Set(uploadedVideos.map((v) => v.view)));
 
   try {
-    // === Stage 1: 헤드코치 판정 (영상 + 키 프레임) ===
-    const judgement = await runHeadJudge(file, frames, input.clubHint);
-    // 점수 → 등급/단계는 코드에서 결정적으로 매핑 + 하드 게이트 적용
+    // === Stage 1: 헤드코치 판정 (모든 시점 + 각 시점의 키 프레임) ===
+    const judgement = await runHeadJudge(uploadedVideos, allFrames, input.clubHint);
     const { grade, level, total: mechanicsTotal, gateNote } = scoreToGradeLevel(
       judgement.mechanicsScores,
     );
@@ -539,7 +582,8 @@ export async function analyzeSwingVideo(
 
     for (let attempt = 1; attempt <= MAX_REVIEW_ATTEMPTS; attempt++) {
       coachOutput = await runCoach(
-        file,
+        uploadedVideos,
+        allFrames,
         coach,
         judgement,
         grade,
@@ -561,6 +605,7 @@ export async function analyzeSwingVideo(
       .join(" / ");
 
     return {
+      views: viewsUsed,
       clubType: judgement.clubType,
       clubConfidence: judgement.clubConfidence,
       clubCues: judgement.clubCues,
@@ -580,40 +625,80 @@ export async function analyzeSwingVideo(
       review,
     };
   } finally {
-    fileManager.deleteFile(uploadResult.file.name).catch(() => {});
+    // 업로드된 모든 파일 정리.
+    await Promise.all(
+      uploads.map((u) =>
+        fileManager.deleteFile(u.uploadResult.file.name).catch(() => {}),
+      ),
+    );
   }
 }
 
 // ---------- Stage runners ----------
 
+interface UploadedVideo {
+  view: VideoView;
+  uri: string;
+  mimeType: string;
+}
+
+/**
+ * 영상·프레임 parts를 시점별로 묶어서 일관된 순서로 구성한다.
+ * 측면샷이 있으면 먼저, 그 다음 정면샷.
+ */
+function buildMediaParts(
+  videos: UploadedVideo[],
+  frames: ExtractedFrame[],
+): Content["parts"] {
+  const parts: Content["parts"] = [];
+  const order: VideoView[] = ["side", "front"];
+  for (const view of order) {
+    const vFrames = frames.filter((f) => f.view === view);
+    const vVideos = videos.filter((v) => v.view === view);
+    if (vFrames.length === 0 && vVideos.length === 0) continue;
+    parts.push({
+      text: `\n=== ${VIDEO_VIEW_LABEL[view]} (${view}) ===`,
+    });
+    if (vFrames.length > 0) {
+      parts.push({
+        text: `정지 프레임 ${vFrames.length}장 (영상 10/30/50/70/90% 지점):`,
+      });
+      for (const f of vFrames) {
+        parts.push({ text: `- ${f.label}` });
+        parts.push({ inlineData: { mimeType: f.mimeType, data: f.base64 } });
+      }
+    }
+    for (const v of vVideos) {
+      parts.push({ text: `${VIDEO_VIEW_LABEL[view]} 영상:` });
+      parts.push({ fileData: { mimeType: v.mimeType, fileUri: v.uri } });
+    }
+  }
+  return parts;
+}
+
 async function runHeadJudge(
-  file: { uri: string; mimeType: string },
+  videos: UploadedVideo[],
   frames: ExtractedFrame[],
   clubHint?: ClubType,
 ): Promise<HeadJudgement> {
   const model = makeModel(HEAD_JUDGE_PROMPT);
   const hintBlock = clubHint
     ? `[사용자 지정 클럽] "${CLUB_LABEL[clubHint]}"로 고정. clubType="${clubHint}", clubConfidence=1.0, clubCues=["사용자가 직접 지정함"].`
-    : `[클럽 자동 인식 필요] 정지+동적 단서를 모두 활용해 정확히 판정하세요.`;
+    : `[클럽 자동 인식 필요] 아래 시점들의 정지+동적 단서를 모두 활용해 정확히 판정하세요.`;
+
+  const viewsProvided = Array.from(new Set(videos.map((v) => v.view)));
+  const viewsBlock =
+    `[제공된 시점] ${viewsProvided.map((v) => VIDEO_VIEW_LABEL[v]).join(" + ") || "없음"}\n` +
+    (viewsProvided.length === 1
+      ? `* ${VIDEO_VIEW_LABEL[viewsProvided[0]]} 1개 시점만 제공됐습니다. 나머지 시점에서만 관찰 가능한 항목은 "관찰 불가"로 처리하고 note에 명시하세요.`
+      : "* 두 시점이 모두 제공됐습니다. 각 시점의 강점을 활용해 종합 판정하세요.");
 
   const parts: Content["parts"] = [
     { text: hintBlock },
-    {
-      text:
-        `[추출된 정지 프레임 ${frames.length}장 — 영상 ${frames
-          .map((f) => f.phase)
-          .join(" → ")} 순서]\n` +
-        "어드레스의 정적 단서(클럽 인식)는 이 정지 프레임을 우선 사용하세요.",
-    },
+    { text: viewsBlock },
+    ...buildMediaParts(videos, frames),
+    { text: "\n위 시점들을 모두 종합해 헤드코치 판정 JSON만 출력하세요." },
   ];
-  for (const f of frames) {
-    parts.push({ text: `--- ${f.label} ---` });
-    parts.push({ inlineData: { mimeType: f.mimeType, data: f.base64 } });
-  }
-  parts.push({
-    text: "위 정지 프레임과 아래 영상을 함께 보고 헤드코치 판정 JSON만 출력하세요.",
-  });
-  parts.push({ fileData: { mimeType: file.mimeType, fileUri: file.uri } });
 
   const result = await model.generateContent({
     contents: [{ role: "user", parts }],
@@ -674,7 +759,8 @@ async function runHeadJudge(
 }
 
 async function runCoach(
-  file: { uri: string; mimeType: string },
+  videos: UploadedVideo[],
+  frames: ExtractedFrame[],
   coach: CoachPersona,
   judgement: HeadJudgement,
   grade: Grade,
@@ -689,8 +775,14 @@ async function runCoach(
       text: `[헤드코치 재작성 요청 — 시도 ${attempt}/${MAX_REVIEW_ATTEMPTS}]\n이전 작성물이 헤드코치 리뷰를 통과하지 못했습니다.\n다음 피드백을 반영해서 다시 작성하세요:\n\n${retryFeedback}`,
     });
   }
-  parts.push({ text: "이 영상에 대한 코치 출력 JSON만 작성하세요." });
-  parts.push({ fileData: { mimeType: file.mimeType, fileUri: file.uri } });
+  const viewsProvided = Array.from(new Set(videos.map((v) => v.view)));
+  parts.push({
+    text:
+      `[제공된 시점] ${viewsProvided.map((v) => VIDEO_VIEW_LABEL[v]).join(" + ")}\n` +
+      "측면샷은 스윙 플레인·자세각·임팩트에 강하고, 정면샷은 정렬·스웨이·체중 이동에 강합니다. 두 시점이 있으면 모두 활용하세요.",
+  });
+  parts.push(...buildMediaParts(videos, frames));
+  parts.push({ text: "위 시점들을 종합해 코치 출력 JSON만 작성하세요." });
   const result = await model.generateContent({
     contents: [{ role: "user", parts }],
   });

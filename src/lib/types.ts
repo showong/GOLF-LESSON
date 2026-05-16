@@ -6,6 +6,13 @@ export const CLUB_LABEL: Record<ClubType, string> = {
   approach: "어프로치",
 };
 
+export type VideoView = "side" | "front";
+
+export const VIDEO_VIEW_LABEL: Record<VideoView, string> = {
+  side: "측면샷",
+  front: "정면샷",
+};
+
 export type Grade = "beginner" | "amateur" | "semipro" | "pro";
 
 export const GRADE_LABEL: Record<Grade, string> = {
@@ -78,6 +85,8 @@ export interface ReviewResult {
 }
 
 export interface SwingAnalysis {
+  /** 이 분석에 사용된 영상 시점들 */
+  views?: VideoView[];
   clubType: ClubType;
   clubConfidence: number;
   clubCues: string[];

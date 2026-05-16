@@ -4,12 +4,15 @@ import path from "node:path";
 import os from "node:os";
 import { v4 as uuidv4 } from "uuid";
 import ffmpegPathImport from "ffmpeg-static";
+import { VIDEO_VIEW_LABEL, type VideoView } from "./types";
 
 // ffmpeg-static은 default export로 binary 경로 문자열을 줌(미지원 플랫폼은 null).
 const ffmpegPath = ffmpegPathImport as unknown as string | null;
 
 export interface ExtractedFrame {
-  /** 사용자에게 노출되는 라벨 (예: "1/5 어드레스 (t=0.45s)") */
+  /** 영상 시점 (측면/정면) */
+  view: VideoView;
+  /** 사용자에게 노출되는 라벨 (예: "측면샷 1/5 어드레스 (t=0.45s)") */
   label: string;
   /** 골프 스윙 단계 추정값 */
   phase: SwingPhase;
@@ -98,12 +101,14 @@ async function extractSingleFrame(
  */
 export async function extractKeyFrames(
   videoPath: string,
+  view: VideoView,
 ): Promise<ExtractedFrame[]> {
   const duration = await getVideoDurationSec(videoPath);
   const tmpDir = path.join(os.tmpdir(), `gtutor-frames-${uuidv4()}`);
   await fs.mkdir(tmpDir, { recursive: true });
 
   try {
+    const viewLabel = VIDEO_VIEW_LABEL[view];
     const frames: ExtractedFrame[] = [];
     for (let i = 0; i < PHASES.length; i++) {
       const { ratio, phase, label } = PHASES[i];
@@ -112,7 +117,8 @@ export async function extractKeyFrames(
       await extractSingleFrame(videoPath, ts, out);
       const data = await fs.readFile(out);
       frames.push({
-        label: `${i + 1}/${PHASES.length} ${label} (t=${ts.toFixed(2)}s)`,
+        view,
+        label: `${viewLabel} ${i + 1}/${PHASES.length} ${label} (t=${ts.toFixed(2)}s)`,
         phase,
         timestampSec: ts,
         base64: data.toString("base64"),
