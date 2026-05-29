@@ -10,6 +10,7 @@ import {
   saveAnalysis,
 } from "@/lib/db";
 import { analyzeSwingVideo, type AnalyzeVideo } from "@/lib/gemini";
+import { findRecommendations } from "@/lib/youtube";
 import { getCoach, HEAD_COACH } from "@/lib/coaches";
 import { CLUB_LABEL, GRADE_LABEL } from "@/lib/types";
 import type { ClubType, VideoView } from "@/lib/types";
@@ -121,6 +122,19 @@ export async function POST(req: Request) {
       clubHint,
       history,
     });
+
+    // 추천 영상 검색 (실패해도 분석 결과는 그대로 전달)
+    try {
+      analysis.recommendations = await findRecommendations({
+        clubType: analysis.clubType,
+        grade: analysis.grade,
+        topFocus: analysis.topFocus,
+        weaknesses: analysis.weaknesses,
+      });
+    } catch (e) {
+      console.warn("YouTube 추천 영상 검색 실패:", e);
+      analysis.recommendations = [];
+    }
 
     const record = saveAnalysis(user.id, analysis);
     const prev = previousForClub(user.id, analysis.clubType, record.createdAt);

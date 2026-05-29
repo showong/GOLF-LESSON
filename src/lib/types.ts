@@ -84,6 +84,18 @@ export interface ReviewResult {
   breakdown: ReviewBreakdown;
 }
 
+export interface VideoRecommendation {
+  videoId: string;
+  title: string;
+  channelTitle: string;
+  channelId: string;
+  thumbnailUrl: string;
+  publishedAt: string;
+  url: string;
+  isWhitelisted: boolean;
+  matchedQuery: string;
+}
+
 export interface SwingAnalysis {
   /** 이 분석에 사용된 영상 시점들 */
   views?: VideoView[];
@@ -106,6 +118,8 @@ export interface SwingAnalysis {
   coachMessage: string;
   oneLineSummary: string;
   review: ReviewResult;
+  /** 약점/포커스 키워드 기반 YouTube 추천 영상 (화이트리스트 우선) */
+  recommendations?: VideoRecommendation[];
 }
 
 export interface AnalysisRecord {

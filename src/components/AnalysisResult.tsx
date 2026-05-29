@@ -9,6 +9,7 @@ import {
   type ProgressDelta,
   type ReviewResult,
   type SwingPoint,
+  type VideoRecommendation,
 } from "@/lib/types";
 
 interface Props {
@@ -251,6 +252,8 @@ export default function AnalysisResult({ data }: Props) {
         <PointList title="바로 해볼 드릴" tone="drill" items={a.drills} />
       </div>
 
+      <RecommendationStrip recommendations={a.recommendations} />
+
       <div className="rounded-xl border border-fairway-100 bg-fairway-50 p-4 text-sm text-fairway-900">
         <strong>변화 노트.</strong> {delta.note}
       </div>
@@ -424,6 +427,83 @@ function MechanicsBreakdown({
       </ul>
     </div>
   );
+}
+
+function RecommendationStrip({
+  recommendations,
+}: {
+  recommendations?: VideoRecommendation[];
+}) {
+  if (!recommendations || recommendations.length === 0) return null;
+  return (
+    <div className="rounded-2xl border border-fairway-100 bg-white p-5 shadow-sm">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-fairway-900">
+          오늘의 약점을 다룬 YouTube 영상
+        </h3>
+        <span className="text-[11px] text-fairway-700/60">
+          화이트리스트 채널 우선 · 신뢰도 ↑
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-fairway-700/70">
+        헤드코치가 짚은 핵심 포커스와 약점을 기준으로 검색한 결과예요.
+      </p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {recommendations.map((r) => (
+          <a
+            key={r.videoId}
+            href={r.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`group block overflow-hidden rounded-xl border transition hover:shadow-md ${
+              r.isWhitelisted
+                ? "border-fairway-500 bg-fairway-50/40"
+                : "border-fairway-100 bg-white"
+            }`}
+          >
+            <div className="relative">
+              {r.thumbnailUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={r.thumbnailUrl}
+                  alt=""
+                  className="aspect-video w-full object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="aspect-video w-full bg-fairway-100" />
+              )}
+              {r.isWhitelisted && (
+                <span className="absolute left-1.5 top-1.5 rounded bg-fairway-700 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  추천 채널
+                </span>
+              )}
+            </div>
+            <div className="p-3">
+              <h4 className="line-clamp-2 text-sm font-semibold text-fairway-900 group-hover:text-fairway-700">
+                {r.title}
+              </h4>
+              <div className="mt-1.5 flex items-center justify-between text-[11px] text-fairway-700/70">
+                <span className="truncate">{r.channelTitle}</span>
+                <span>{relativeDate(r.publishedAt)}</span>
+              </div>
+            </div>
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function relativeDate(iso: string): string {
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "";
+  const days = Math.floor((Date.now() - t) / 86400000);
+  if (days < 1) return "오늘";
+  if (days < 7) return `${days}일 전`;
+  if (days < 30) return `${Math.floor(days / 7)}주 전`;
+  if (days < 365) return `${Math.floor(days / 30)}개월 전`;
+  return `${Math.floor(days / 365)}년 전`;
 }
 
 const OBSERVATION_LABELS: Record<string, string> = {
