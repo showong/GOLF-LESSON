@@ -6,8 +6,50 @@
   color-scheme: light;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   background: linear-gradient(180deg, #f1f8f1 0%, #ffffff 60%);
   color: #13311c;
   font-feature-settings: "ss01", "ss02";
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 모바일 입력 폼 zoom-in 방지 */
+input,
+select,
+textarea,
+button {
+  font-size: max(16px, 1rem);
+}
+
+/* iOS safe-area 유틸 */
+.safe-pt {
+  padding-top: max(env(safe-area-inset-top), 0px);
+}
+.safe-pb {
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+}
+.safe-pb-12 {
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+  padding-bottom: calc(env(safe-area-inset-bottom) + 3rem);
+}
+
+/* 가로 스와이프용 스크롤바 숨김 */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* 줄 클램프 */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }

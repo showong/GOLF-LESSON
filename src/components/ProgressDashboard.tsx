@@ -42,8 +42,8 @@ export default function ProgressDashboard({
   if (!nickname.trim()) return null;
 
   return (
-    <section className="rounded-2xl border border-fairway-100 bg-white p-6 shadow-sm">
-      <div className="flex items-center justify-between">
+    <section className="rounded-2xl border border-fairway-100 bg-white p-4 shadow-sm sm:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-1">
         <h2 className="text-base font-semibold text-fairway-900">
           {nickname}님의 클럽별 변화 기록
         </h2>
@@ -53,15 +53,21 @@ export default function ProgressDashboard({
         같은 사용자가 업로드한 영상의 등급/단계 변화를 클럽별로 나눠서 보여드려요.
       </p>
 
-      <div className="mt-5 grid gap-4 md:grid-cols-3">
+      {/* 모바일: 가로 스와이프, sm 이상: 3열 그리드 */}
+      <div className="no-scrollbar mt-4 -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:grid sm:snap-none sm:grid-cols-3 sm:overflow-visible sm:gap-4 sm:px-0">
         {sections?.map((s) => (
-          <ClubSection key={s.clubType} section={s} />
+          <div
+            key={s.clubType}
+            className="min-w-[78%] shrink-0 snap-start sm:min-w-0 sm:shrink"
+          >
+            <ClubSection section={s} />
+          </div>
         ))}
         {!sections &&
           ["드라이버", "아이언", "어프로치"].map((l) => (
             <div
               key={l}
-              className="rounded-xl border border-dashed border-fairway-100 p-4 text-sm text-fairway-700/60"
+              className="min-w-[78%] shrink-0 snap-start rounded-xl border border-dashed border-fairway-100 p-4 text-sm text-fairway-700/60 sm:min-w-0 sm:shrink"
             >
               {l} · 아직 분석 기록이 없어요.
             </div>
@@ -74,7 +80,7 @@ export default function ProgressDashboard({
 function ClubSection({ section }: { section: Section }) {
   const records = section.records;
   return (
-    <div className="rounded-xl border border-fairway-100 p-4">
+    <div className="h-full rounded-xl border border-fairway-100 p-4">
       <h3 className="text-sm font-semibold text-fairway-900">
         {section.label}
       </h3>

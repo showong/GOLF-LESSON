@@ -134,14 +134,14 @@ export default function AnalysisResult({ data }: Props) {
   const lowConfidence = a.clubConfidence < 0.6;
 
   return (
-    <section className="space-y-5">
-      <div className="rounded-2xl bg-fairway-900 p-6 text-white shadow-md">
-        <div className="flex flex-wrap items-end justify-between gap-3">
+    <section className="space-y-4 sm:space-y-5">
+      <div className="rounded-2xl bg-fairway-900 p-5 text-white shadow-md sm:p-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
           <div>
-            <div className="text-xs uppercase tracking-wider text-fairway-100/70">
+            <div className="text-[11px] uppercase tracking-wider text-fairway-100/70">
               {headCoach.name} 판정
             </div>
-            <h2 className="mt-1 text-2xl font-bold">
+            <h2 className="mt-1 text-xl font-bold sm:text-2xl">
               {labels.club} · {labels.grade} LV-{a.level}
             </h2>
             <p className="mt-1 text-sm text-fairway-100/80">
@@ -149,7 +149,7 @@ export default function AnalysisResult({ data }: Props) {
             </p>
           </div>
           <span
-            className={`rounded-full px-3 py-1 text-xs font-semibold ${DIRECTION_COLOR[delta.direction]}`}
+            className={`inline-flex w-fit rounded-full px-3 py-1 text-xs font-semibold ${DIRECTION_COLOR[delta.direction]}`}
           >
             {DIRECTION_LABEL[delta.direction]}
             {delta.previous &&
@@ -436,26 +436,27 @@ function RecommendationStrip({
 }) {
   if (!recommendations || recommendations.length === 0) return null;
   return (
-    <div className="rounded-2xl border border-fairway-100 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between">
+    <div className="rounded-2xl border border-fairway-100 bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-1">
         <h3 className="text-sm font-semibold text-fairway-900">
           오늘의 약점을 다룬 YouTube 영상
         </h3>
         <span className="text-[11px] text-fairway-700/60">
-          화이트리스트 채널 우선 · 신뢰도 ↑
+          화이트리스트 채널 우선
         </span>
       </div>
       <p className="mt-1 text-xs text-fairway-700/70">
         헤드코치가 짚은 핵심 포커스와 약점을 기준으로 검색한 결과예요.
       </p>
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {/* 모바일: 가로 스와이프(snap), sm 이상: 그리드 */}
+      <div className="no-scrollbar mt-3 -mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-1 sm:mx-0 sm:grid sm:snap-none sm:grid-cols-2 sm:overflow-visible sm:px-0 lg:grid-cols-3">
         {recommendations.map((r) => (
           <a
             key={r.videoId}
             href={r.url}
             target="_blank"
             rel="noopener noreferrer"
-            className={`group block overflow-hidden rounded-xl border transition hover:shadow-md ${
+            className={`group block min-w-[78%] shrink-0 snap-start overflow-hidden rounded-xl border transition hover:shadow-md sm:min-w-0 sm:shrink ${
               r.isWhitelisted
                 ? "border-fairway-500 bg-fairway-50/40"
                 : "border-fairway-100 bg-white"

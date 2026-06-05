@@ -24,17 +24,16 @@ export default function HomePage() {
   }, [nickname]);
 
   return (
-    <div className="space-y-8">
-      <section className="rounded-2xl bg-gradient-to-br from-fairway-700 to-fairway-900 p-8 text-white shadow-md">
-        <h1 className="text-2xl font-bold sm:text-3xl">
+    <div className="space-y-6 sm:space-y-8">
+      <section className="rounded-2xl bg-gradient-to-br from-fairway-700 to-fairway-900 p-5 text-white shadow-md sm:p-8">
+        <h1 className="text-xl font-bold leading-tight sm:text-3xl">
           오늘 친 스윙, 코치가 바로 봐드릴게요.
         </h1>
-        <p className="mt-2 text-sm text-fairway-100/80">
-          스크린골프장에서 받은 영상을 그대로 올려주세요. 클럽 종류를 알아서
-          인식하고 등급(골린이·아마추어·세미프로·프로)과 LV-1~3 단계를 매겨
-          드립니다. 이전 영상과 비교해서 어떻게 달라졌는지도 클럽별로 보여드려요.
+        <p className="mt-2 text-sm leading-relaxed text-fairway-100/85">
+          스크린골프장 영상을 올리거나 폰으로 촬영하면 AI 코치가 클럽 종류·등급(골린이~프로)·
+          LV-1~3을 매겨드려요. 측면샷과 정면샷 둘 다 올리면 더 정확합니다.
         </p>
-        <div className="mt-5 max-w-sm">
+        <div className="mt-5 max-w-md">
           <label className="block text-xs font-medium text-fairway-100/80">
             닉네임 (메모리/기록 식별용)
           </label>
@@ -42,7 +41,9 @@ export default function HomePage() {
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
             placeholder="예: 9번홀의왕"
-            className="mt-1 w-full rounded-lg border border-fairway-600 bg-fairway-900/40 px-3 py-2 text-sm text-white placeholder-fairway-100/40 focus:border-sand-300 focus:outline-none"
+            inputMode="text"
+            autoComplete="nickname"
+            className="mt-1.5 block w-full rounded-lg border border-fairway-600 bg-fairway-900/40 px-3 py-3 text-base text-white placeholder-fairway-100/40 focus:border-sand-300 focus:outline-none"
           />
         </div>
       </section>
@@ -52,15 +53,21 @@ export default function HomePage() {
         onResult={(data) => {
           setResult(data);
           setRefreshKey((k) => k + 1);
+          // 결과 화면으로 자동 스크롤 (특히 모바일에서 유용)
+          requestAnimationFrame(() => {
+            document
+              .getElementById("analysis-result")
+              ?.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
         }}
       />
 
       {result && (
-        <AnalysisResult
-          data={
-            result as Parameters<typeof AnalysisResult>[0]["data"]
-          }
-        />
+        <div id="analysis-result">
+          <AnalysisResult
+            data={result as Parameters<typeof AnalysisResult>[0]["data"]}
+          />
+        </div>
       )}
 
       <ProgressDashboard nickname={nickname} refreshKey={refreshKey} />
