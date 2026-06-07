@@ -110,7 +110,12 @@ export interface SwingAnalysis {
   level: Level;
   gradeRationale: string;
   mechanicsScores: MechanicsScore[];
+  /** 8항목 0~3점 원본 합계 (0~24). UI에서 항목별 점수 합으로 표시 */
   mechanicsTotal: number;
+  /** 기본기 가중치 1.5배 적용 합계 (0~30). 등급 판정에 사용 */
+  mechanicsWeighted?: number;
+  /** 자기보정 단계에서 점수 조정이 있었는지 + 사유 */
+  calibrationNote?: string;
   topFocus: SwingFocus;
   strengths: SwingPoint[];
   weaknesses: SwingPoint[];
@@ -133,66 +138,101 @@ export interface AnalysisRecord {
   analysis: SwingAnalysis;
 }
 
+/** 기본기 4항목(가중치 1.5배). 화려한 4항목은 1.0배 */
+const FUNDAMENTAL_DIMS: MechanicsDim[] = [
+  "address",
+  "takeaway",
+  "transition",
+  "balance",
+];
+
 /**
- * 8개 항목 × 0~3점 = 0~24점.
+ * 가중 점수 계산: 기본기 4항목 × 1.5 + 화려한 4항목 × 1.0
+ * 최댓값 = 4×3×1.5 + 4×3×1.0 = 18 + 12 = 30
+ */
+export function weightedTotal(scores: MechanicsScore[]): number {
+  return scores.reduce((sum, s) => {
+    const w = FUNDAMENTAL_DIMS.includes(s.dim) ? 1.5 : 1.0;
+    return sum + s.score * w;
+  }, 0);
+}
+
+/**
+ * 가중 점수 → 등급/단계 매핑.
  *
- * [강화된 매핑 — 너무 후한 등급 부여 방지]
- *  - 등급 밴드를 한 단계씩 위로 push (amateur는 8점부터, semipro는 14점부터, pro는 20점부터)
- *  - 하드 게이트로 핵심 조건 미달 시 자동 강등:
- *    · pro: 8항목 모두 ≥2점 + 3점이 4개 이상 필요. 미달 시 semipro LV-3
- *    · semipro/pro: 기본기 4항목(★) 모두 ≥2점 필요. 미달 시 amateur LV-3
- *    · amateur: 8항목 중 ≥1점이 4개 이상 필요. 미달 시 beginner LV-3
- *  - 합계가 높아도 기본기 한 항목이라도 1점이면 semipro/pro 절대 불가.
+ * [개편: 가중 채점(기본기 1.5배) + 인구분포 비대칭 밴드 + 강한 게이트]
+ *  - 한국 골퍼 분포: 골린이 60% / 아마추어 32% / 세미프로 7% / 프로 1%
+ *  - 밴드(가중 0~30):
+ *    · 골린이 : 0-9  (10폭)  ← 입문/평균 이하
+ *    · 아마추어: 10-19 (10폭) ← 가장 넓은 밴드. 일반 주말 골퍼
+ *    · 세미프로: 20-26 (7폭)  ← 싱글 핸디캡
+ *    · 프로  : 27-30 (4폭)  ← 거의 도달 불가
+ *  - 강한 하드 게이트 (원본 0~3 점수 기준):
+ *    · pro: 8항목 모두 ≥2 + 3점 4개↑ + 기본기 모두 = 3. 미달 시 semipro LV-3
+ *    · semipro/pro: 기본기 4항목 모두 ≥2점 필요. 미달 시 amateur LV-3
+ *    · amateur: 기본기 3개↑가 ≥1점 + 8항목 중 ≥1점 4개↑. 미달 시 beginner LV-3
  */
 export function scoreToGradeLevel(
   scores: MechanicsScore[],
-): { grade: Grade; level: Level; total: number; gateNote?: string } {
+): {
+  grade: Grade;
+  level: Level;
+  total: number;
+  weighted: number;
+  gateNote?: string;
+} {
   const total = scores.reduce((s, m) => s + m.score, 0);
+  const weighted = weightedTotal(scores);
 
-  const fundamentals: MechanicsDim[] = ["address", "takeaway", "transition", "balance"];
-  const fundOk = scores
-    .filter((s) => fundamentals.includes(s.dim))
-    .every((s) => s.score >= 2);
+  // 게이트 체크용 원본 점수 통계
+  const fundamentals = scores.filter((s) => FUNDAMENTAL_DIMS.includes(s.dim));
+  const fundOk = fundamentals.every((s) => s.score >= 2);
+  const fundAllThree = fundamentals.every((s) => s.score === 3);
+  const fundAtLeast1Count = fundamentals.filter((s) => s.score >= 1).length;
   const allDimsOk = scores.every((s) => s.score >= 2);
   const numThrees = scores.filter((s) => s.score === 3).length;
   const numAtLeast1 = scores.filter((s) => s.score >= 1).length;
 
-  // 1) 합계로 기본 등급 산출 (강화된 밴드)
+  // 1) 가중 점수로 기본 등급/단계 산출
   let grade: Grade;
   let level: Level;
-  if (total <= 7) {
+  const w = Math.floor(weighted);
+  if (w < 10) {
     grade = "beginner";
-    level = (total <= 2 ? 1 : total <= 5 ? 2 : 3) as Level;
-  } else if (total <= 13) {
+    level = (w <= 3 ? 1 : w <= 6 ? 2 : 3) as Level;
+  } else if (w < 20) {
     grade = "amateur";
-    level = (total <= 9 ? 1 : total <= 11 ? 2 : 3) as Level;
-  } else if (total <= 19) {
+    level = (w <= 13 ? 1 : w <= 16 ? 2 : 3) as Level;
+  } else if (w < 27) {
     grade = "semipro";
-    level = (total <= 15 ? 1 : total <= 17 ? 2 : 3) as Level;
+    level = (w <= 21 ? 1 : w <= 24 ? 2 : 3) as Level;
   } else {
     grade = "pro";
-    level = (total <= 21 ? 1 : total <= 22 ? 2 : 3) as Level;
+    level = (w <= 27 ? 1 : w <= 29 ? 2 : 3) as Level;
   }
 
-  // 2) 하드 게이트 (위에서 아래로 검사)
+  // 2) 강한 하드 게이트
   let gateNote: string | undefined;
-  if (grade === "pro" && (!allDimsOk || numThrees < 4)) {
+  if (grade === "pro" && (!allDimsOk || numThrees < 4 || !fundAllThree)) {
     grade = "semipro";
     level = 3;
-    gateNote = "프로 게이트 미달(8항목 ≥2 + 3점 4개↑ 필요). 세미프로 LV-3로 조정.";
+    gateNote =
+      "프로 게이트 미달(8항목 ≥2 + 3점 4개↑ + 기본기 모두 3점 필요). 세미프로 LV-3로 조정.";
   }
   if ((grade === "pro" || grade === "semipro") && !fundOk) {
     grade = "amateur";
     level = 3;
-    gateNote = "기본기 게이트 미달(★ 4항목 모두 ≥2 필요). 아마추어 LV-3로 조정.";
+    gateNote =
+      "기본기 게이트 미달(★ 4항목 모두 ≥2점 필요). 아마추어 LV-3로 조정.";
   }
-  if (grade === "amateur" && numAtLeast1 < 4) {
+  if (grade === "amateur" && (numAtLeast1 < 4 || fundAtLeast1Count < 3)) {
     grade = "beginner";
     level = 3;
-    gateNote = "아마추어 게이트 미달(≥1점 4개↑ 필요). 골린이 LV-3로 조정.";
+    gateNote =
+      "아마추어 게이트 미달(기본기 3개↑가 ≥1점 + 8항목 중 ≥1점 4개↑ 필요). 골린이 LV-3로 조정.";
   }
 
-  return { grade, level, total, gateNote };
+  return { grade, level, total, weighted, gateNote };
 }
 
 export interface ProgressDelta {

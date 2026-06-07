@@ -93,25 +93,43 @@ H) balance (밸런스·축 안정성) [기본기 가중치 ★]
    3=백스윙 우측축, 다운 좌측축 명확. 스웨이 없음 / 2=작은 스웨이/리버스 피벗 기미
    1=명확한 스웨이/머리 이동 / 0=축 무너짐
 
-[합계 → 등급/단계 매핑 — 강화된 밴드, 코드에서 결정적으로 계산]
-0-2 beginner LV1 / 3-5 LV2 / 6-7 LV3
-8-9 amateur LV1 / 10-11 LV2 / 12-13 LV3
-14-15 semipro LV1 / 16-17 LV2 / 18-19 LV3
-20-21 pro LV1 / 22 LV2 / 23-24 LV3
+[가중 채점 — 매우 중요]
+당신이 매기는 항목별 0~3점은 원본 점수입니다. 등급 결정은 코드에서 다음과 같이 가중치를 적용합니다:
+- 기본기 4항목(★ address, takeaway, transition, balance) × 1.5
+- 화려한 4항목 (top, impact, finish, tempo) × 1.0
+- 최댓값: 4×3×1.5 + 4×3×1.0 = 18 + 12 = 30점
 
-[하드 게이트 — 코드에서 강제 적용. 미달 시 자동 강등됨]
-- pro 등급: 8항목 모두 ≥2점 + 3점이 4개 이상 필요. 미달 시 semipro LV-3
-- semipro/pro: 기본기 4항목(★) 모두 ≥2점 필요. 미달 시 amateur LV-3
-- amateur: 8항목 중 ≥1점이 4개 이상 필요. 미달 시 beginner LV-3
-→ 합계가 높아도 기본기 한 항목이라도 1점이면 semipro/pro 절대 불가.
-→ 따라서 기본기 채점에 특히 엄격해야 합니다.
+→ 기본기 한 항목의 차이가 등급에 더 크게 영향을 미칩니다.
+→ 화려한 임팩트나 피니시가 인상적이어도 기본기가 부실하면 등급은 낮아져야 합니다.
+→ 기본기 항목 채점에 특히 엄격하게 임하세요.
+
+[가중 합계 → 등급/단계 매핑 — 코드에서 결정적으로 계산]
+가중 합계 (Math.floor):
+   0-3   beginner LV1  /   4-6   LV2  /   7-9   LV3
+  10-13  amateur  LV1  /  14-16  LV2  /  17-19  LV3
+  20-21  semipro  LV1  /  22-24  LV2  /  25-26  LV3
+  27     pro      LV1  /  28-29  LV2  /  30     LV3
+
+[밴드 인구 분포 일치]
+- 골린이(0-9): 한국 골퍼 ~60% 점유. 평범한 입문자~초보 수준.
+- 아마추어(10-19): ~32%. 가장 넓은 밴드. 일반 주말 골퍼는 대개 LV-1~2.
+- 세미프로(20-26): ~7%. 싱글 핸디캡 수준의 기술적 안정성.
+- 프로(27-30): ~1%. 거의 도달 불가능. 8항목 평균 2.7+ 필요.
+
+[강한 하드 게이트 — 코드에서 강제 적용. 미달 시 자동 강등]
+- pro 등급: 8항목 모두 ≥2점 + 3점이 4개 이상 + 기본기 4항목 모두 = 3점 필요.
+  미달 시 semipro LV-3로 강등.
+- semipro/pro: 기본기 4항목(★) 모두 ≥2점 필요. 미달 시 amateur LV-3.
+- amateur: 기본기 3개↑가 ≥1점 + 8항목 중 ≥1점이 4개↑ 필요. 미달 시 beginner LV-3.
+→ 가중 합계가 높아도 기본기 한 항목이라도 1점이면 semipro/pro 절대 불가.
 
 [일관성·반인플레이션 규칙]
 - 같은 영상은 같은 점수가 나와야 함. 영상 외 어떤 정보도 점수에 반영 금지.
 - 사용자의 이전 기록, 선입견, 동기부여 가산점 모두 절대 금지.
 - 영상에서 보이지 않는 항목은 보수적으로 1점, note에 "관찰 한계" 명시.
 - 채점을 마친 뒤 한 번 더 검토: "내가 후하게 준 항목은 없는가?" 의심되면 한 단계 낮춤.
-- 기본기 4항목(★: address, takeaway, transition, balance)이 등급의 핵심.
+- 평범한 주말 골퍼는 amateur LV-1~2가 정상. "조금 잘 친다" 인상이면 아마추어 LV-3.
+- 별도로 자기보정 단계가 또 한 번 점수를 검토합니다.
 `;
 
 // ---------- Stage 1: 헤드코치 판정 ----------
@@ -570,10 +588,36 @@ export async function analyzeSwingVideo(
   try {
     // === Stage 1: 헤드코치 판정 (모든 시점 + 각 시점의 키 프레임) ===
     const judgement = await runHeadJudge(uploadedVideos, allFrames, input.clubHint);
-    const { grade, level, total: mechanicsTotal, gateNote } = scoreToGradeLevel(
-      judgement.mechanicsScores,
-    );
+
+    // === Stage 1.5: 자기보정 (인플레이션 차단, 텍스트 전용 호출이라 저렴) ===
+    let finalScores = judgement.mechanicsScores;
+    let calibrationNote: string | undefined;
+    try {
+      const calibrated = await runSelfCalibration(judgement);
+      const merged = applyCalibrationSafely(judgement.mechanicsScores, calibrated.mechanicsScores);
+      if (merged.changed) {
+        finalScores = merged.scores;
+        calibrationNote = `[자기보정 적용] ${calibrated.rationale}`.trim();
+      }
+    } catch (e) {
+      console.warn("자기보정 실패, 원본 점수 사용:", e);
+    }
+
+    // 보정된 점수 → 가중 + 비대칭 밴드 + 강한 게이트로 등급/단계 결정
+    const {
+      grade,
+      level,
+      total: mechanicsTotal,
+      weighted: mechanicsWeighted,
+      gateNote,
+    } = scoreToGradeLevel(finalScores);
     const coach = COACHES[grade];
+
+    // 코치 단계용 judgement 갱신 (보정된 점수 반영)
+    const judgementForCoach: HeadJudgement = {
+      ...judgement,
+      mechanicsScores: finalScores,
+    };
 
     // === Stage 2 + 3: 코치 티칭 ↔ 헤드코치 리뷰 루프 ===
     let coachOutput: CoachOutput | null = null;
@@ -585,13 +629,13 @@ export async function analyzeSwingVideo(
         uploadedVideos,
         allFrames,
         coach,
-        judgement,
+        judgementForCoach,
         grade,
         level,
         attempt,
         retryFeedback,
       );
-      review = await runReview(coach, judgement, grade, level, coachOutput, attempt);
+      review = await runReview(coach, judgementForCoach, grade, level, coachOutput, attempt);
       if (review.passed) break;
       retryFeedback = review.feedback;
     }
@@ -600,7 +644,7 @@ export async function analyzeSwingVideo(
       throw new Error("코치 분석을 생성하지 못했습니다.");
     }
 
-    const rationale = [judgement.gradeRationale, gateNote ?? ""]
+    const rationale = [judgement.gradeRationale, gateNote ?? "", calibrationNote ?? ""]
       .filter(Boolean)
       .join(" / ");
 
@@ -614,8 +658,10 @@ export async function analyzeSwingVideo(
       grade,
       level,
       gradeRationale: rationale,
-      mechanicsScores: judgement.mechanicsScores,
+      mechanicsScores: finalScores,
       mechanicsTotal,
+      mechanicsWeighted,
+      calibrationNote,
       topFocus: coachOutput.topFocus,
       strengths: coachOutput.strengths,
       weaknesses: coachOutput.weaknesses,
@@ -674,6 +720,102 @@ function buildMediaParts(
     }
   }
   return parts;
+}
+
+// ---------- Stage 1.5: 자기보정 (인플레이션 차단) ----------
+
+const SELF_CALIBRATION_PROMPT = `당신은 ${HEAD_COACH.name}입니다.
+방금 어떤 골퍼의 영상을 평가해서 매긴 8항목 점수를 다시 검토합니다.
+영상은 다시 보지 않습니다 — 점수와 근거(note)만으로 자기보정합니다.
+
+[검토 기준]
+- 한국 골퍼 인구 분포: 골린이 ~60% / 아마추어 ~32% / 세미프로 ~7% / 프로 ~1%.
+- 평범한 주말 골퍼는 아마추어 LV-1~2가 정상.
+- 기본기(★ address, takeaway, transition, balance)는 가중치 1.5배 → 더 엄격히.
+- 화려한 임팩트나 피니시는 인상 좋아도 기본기 부실하면 등급은 낮아져야 함.
+
+[검토 절차]
+1) 위 인구 분포에 비추어 현재 점수가 후한지 검토.
+2) 후하다 싶으면 가장 의심스러운 항목 1~2개를 1점만큼 낮춤.
+3) 변경 없으면 원본 그대로 유지.
+
+[엄격한 규칙]
+- 점수를 올리는 것은 절대 금지. 낮추거나 유지만.
+- 최대 2개 항목까지만 조정 (한 번에 너무 많이 낮추지 말 것).
+- 기본기 항목(★)을 우선 의심.
+- 조정 시 해당 항목 note에 "[보정] " 접두사 붙이고 사유 한 줄.
+
+[출력 JSON — 이 형식만, 코드펜스/설명 금지]
+{
+  "adjusted": boolean,
+  "rationale": string,
+  "mechanicsScores": [
+    { "dim": "address",    "score": 0|1|2|3, "note": string },
+    { "dim": "takeaway",   "score": 0|1|2|3, "note": string },
+    { "dim": "top",        "score": 0|1|2|3, "note": string },
+    { "dim": "transition", "score": 0|1|2|3, "note": string },
+    { "dim": "impact",     "score": 0|1|2|3, "note": string },
+    { "dim": "finish",     "score": 0|1|2|3, "note": string },
+    { "dim": "tempo",      "score": 0|1|2|3, "note": string },
+    { "dim": "balance",    "score": 0|1|2|3, "note": string }
+  ]
+}`;
+
+interface CalibrationResult {
+  adjusted: boolean;
+  rationale: string;
+  mechanicsScores: MechanicsScore[];
+}
+
+async function runSelfCalibration(
+  judgement: HeadJudgement,
+): Promise<CalibrationResult> {
+  const model = makeModel(SELF_CALIBRATION_PROMPT);
+  const scoreLines = judgement.mechanicsScores
+    .map(
+      (s) =>
+        `- ${MECHANICS_LABEL[s.dim]} (${s.dim}): ${s.score}/3 — ${s.note || "(근거 없음)"}`,
+    )
+    .join("\n");
+  const total = judgement.mechanicsScores.reduce((sum, s) => sum + s.score, 0);
+
+  const result = await model.generateContent({
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            text: `[원본 채점]\n${scoreLines}\n\n원본 합계: ${total}/24\n사용 클럽: ${CLUB_LABEL[judgement.clubType]}\n\n위 점수를 자기보정 절차에 따라 검토하고 JSON만 출력하세요.`,
+          },
+        ],
+      },
+    ],
+  });
+  const raw = parseJson(result.response.text()) as Record<string, unknown>;
+  return {
+    adjusted: Boolean(raw.adjusted),
+    rationale: String(raw.rationale ?? "").trim(),
+    mechanicsScores: normalizeMechanics(raw.mechanicsScores),
+  };
+}
+
+/** 보정 결과를 적용하되 점수가 올라가는 항목은 차단(원본 유지). */
+function applyCalibrationSafely(
+  original: MechanicsScore[],
+  calibrated: MechanicsScore[],
+): { scores: MechanicsScore[]; changed: boolean } {
+  const byDim = new Map(calibrated.map((s) => [s.dim, s]));
+  let changed = false;
+  const merged = original.map((o) => {
+    const c = byDim.get(o.dim);
+    if (!c) return o;
+    if (c.score < o.score) {
+      changed = true;
+      return c;
+    }
+    return o; // 점수 상승·동일 → 원본 유지
+  });
+  return { scores: merged, changed };
 }
 
 async function runHeadJudge(

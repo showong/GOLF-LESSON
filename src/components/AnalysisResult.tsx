@@ -202,6 +202,8 @@ export default function AnalysisResult({ data }: Props) {
       <MechanicsBreakdown
         scores={a.mechanicsScores}
         total={a.mechanicsTotal}
+        weighted={a.mechanicsWeighted}
+        calibrationNote={a.calibrationNote}
       />
 
       <ReviewBadge review={a.review} coachName={coach.name} headCoachName={headCoach.name} />
@@ -362,25 +364,42 @@ function ReviewCell({
 function MechanicsBreakdown({
   scores,
   total,
+  weighted,
+  calibrationNote,
 }: {
   scores: MechanicsScore[];
   total: number;
+  weighted?: number;
+  calibrationNote?: string;
 }) {
-  const pct = Math.round((total / 24) * 100);
+  // 신버전: weighted가 있으면 가중 점수(0~30)를 진행바 기준으로 사용
+  const hasWeighted = typeof weighted === "number";
+  const display = hasWeighted ? Math.round(weighted! * 10) / 10 : total;
+  const max = hasWeighted ? 30 : 24;
+  const pct = Math.round((display / max) * 100);
   return (
-    <div className="rounded-2xl border border-fairway-100 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between">
-        <div>
+    <div className="rounded-2xl border border-fairway-100 bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
           <h3 className="text-sm font-semibold text-fairway-900">
             매커니즘 채점 (헤드코치)
           </h3>
           <p className="text-xs text-fairway-700/70">
-            8개 항목 × 0~3점 = 합계 {total} / 24점 ({pct}%) — 이 합계로
-            등급/단계가 결정됩니다.
+            {hasWeighted ? (
+              <>
+                기본기 ★ × 1.5 가중 = <strong>{display} / 30점</strong> ({pct}%)
+                — 이 가중 합계로 등급이 결정됩니다. 원본 합계 {total} / 24점.
+              </>
+            ) : (
+              <>
+                8개 항목 × 0~3점 = 합계 {display} / 24점 ({pct}%) — 이 합계로
+                등급/단계가 결정됩니다.
+              </>
+            )}
           </p>
         </div>
-        <div className="rounded-lg bg-fairway-900 px-3 py-1.5 text-sm font-bold text-white">
-          {total} / 24
+        <div className="shrink-0 rounded-lg bg-fairway-900 px-3 py-1.5 text-sm font-bold text-white">
+          {display} / {max}
         </div>
       </div>
 
@@ -391,14 +410,29 @@ function MechanicsBreakdown({
         />
       </div>
 
+      {calibrationNote && (
+        <div className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+          {calibrationNote}
+        </div>
+      )}
+
       <ul className="mt-4 grid gap-2 sm:grid-cols-2">
-        {scores.map((m) => (
+        {scores.map((m) => {
+          const isFundamental = ["address", "takeaway", "transition", "balance"].includes(m.dim);
+          return (
           <li
             key={m.dim}
-            className="rounded-lg border border-fairway-100 px-3 py-2"
+            className={`rounded-lg border px-3 py-2 ${
+              isFundamental
+                ? "border-fairway-500/50 bg-fairway-50/40"
+                : "border-fairway-100"
+            }`}
           >
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-fairway-900">
+                {isFundamental && (
+                  <span className="mr-1 text-sand-500" title="기본기 (×1.5 가중)">★</span>
+                )}
                 {MECHANICS_LABEL[m.dim]}
               </span>
               <span className="flex items-center gap-1.5">
@@ -423,7 +457,8 @@ function MechanicsBreakdown({
               </p>
             )}
           </li>
-        ))}
+          );
+        })}
       </ul>
     </div>
   );
