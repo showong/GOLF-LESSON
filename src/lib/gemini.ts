@@ -40,6 +40,120 @@ function apiKey(): string {
   return k;
 }
 
+// ---------- 클럽 인식: 정형 관찰 매핑 + 가중치 ----------
+// LLM의 clubScores 출력은 신뢰하지 않고, clubObservations만 받아서
+// 서버가 가중 투표로 결정한다. 같은 관찰이면 항상 같은 클럽으로 분류.
+
+type ClubOrNull = ClubType | null;
+
+const OBSERVATION_TO_CLUB: Record<string, Record<string, ClubOrNull>> = {
+  tee: {
+    "높은 티": "driver",
+    "낮은 티": "iron",
+    "티 없음": null, // 한국 스크린골프 환경에선 iron/approach 모두 가능 → 다른 단서로 결정
+    "관찰 불가": null,
+  },
+  ballPosition: {
+    "앞발 안쪽": "driver",
+    "스탠스 중앙-약간 왼쪽": "iron",
+    "스탠스 중앙/뒤": "approach",
+    "관찰 불가": null,
+  },
+  stanceWidth: {
+    "어깨보다 넓음": "driver",
+    "어깨 너비": "iron",
+    "어깨보다 좁음": "approach",
+    "관찰 불가": null,
+  },
+  spineAngle: {
+    "거의 수직": "driver",
+    "중간 정도 숙임": "iron",
+    "많이 숙임": "approach",
+    "관찰 불가": null,
+  },
+  clubLength: {
+    "긴 편": "driver",
+    중간: "iron",
+    짧음: "approach",
+    "관찰 불가": null,
+  },
+  headShape: {
+    "큰 둥근 헤드": "driver",
+    "얇은 블레이드": "iron",
+    "누운 큰 로프트 면": "approach",
+    "관찰 불가": null,
+  },
+  swingArc: {
+    "큰 호": "driver",
+    중간: "iron",
+    "컴팩트한 작은 호": "approach",
+    "관찰 불가": null,
+  },
+  swingTempo: {
+    "느리고 부드러움": "driver",
+    중간: "iron",
+    "짧고 빠름": "approach",
+    "관찰 불가": null,
+  },
+};
+
+const OBSERVATION_WEIGHTS: Record<string, number> = {
+  // 결정적 단서 (헤드 자체를 보는 것)
+  headShape: 3,
+  clubLength: 3,
+  // 강한 단서 (어드레스의 기하학)
+  tee: 2,
+  ballPosition: 2,
+  // 보조 단서 (간접 추정)
+  stanceWidth: 1,
+  spineAngle: 1,
+  swingArc: 1,
+  swingTempo: 1,
+};
+// 최대 가중 합계 = 3+3+2+2+1+1+1+1 = 14점
+
+function classifyClubFromObservations(
+  observations: Record<string, string> | null | undefined,
+): {
+  clubType: ClubType;
+  scores: Record<ClubType, number>;
+  confidence: number;
+  observedCount: number;
+} | null {
+  if (!observations) return null;
+  const scores: Record<ClubType, number> = { driver: 0, iron: 0, approach: 0 };
+  let totalWeight = 0;
+  let observedCount = 0;
+  for (const key of Object.keys(OBSERVATION_WEIGHTS)) {
+    const value = observations[key];
+    if (!value || value === "관찰 불가") continue;
+    const club = OBSERVATION_TO_CLUB[key]?.[value];
+    if (!club) continue; // "티 없음" 같은 null 매핑은 카운트 안 함
+    const w = OBSERVATION_WEIGHTS[key];
+    scores[club] += w;
+    totalWeight += w;
+    observedCount += 1;
+  }
+  if (totalWeight === 0) return null;
+
+  const sorted = (Object.entries(scores) as [ClubType, number][]).sort(
+    (a, b) => b[1] - a[1],
+  );
+  const winner = sorted[0][0];
+  const margin = sorted[0][1] - sorted[1][1];
+
+  // 신뢰도: 마진 + 관찰량으로 산출 (마진 비례, 관찰 부족 시 디스카운트)
+  let confidence: number;
+  if (margin >= 6) confidence = 0.95;
+  else if (margin >= 4) confidence = 0.85;
+  else if (margin >= 2) confidence = 0.7;
+  else if (margin >= 1) confidence = 0.55;
+  else confidence = 0.35;
+  if (observedCount < 3) confidence = Math.min(confidence, 0.45);
+
+  return { clubType: winner, scores, confidence, observedCount };
+}
+
 const RUBRIC = `
 [채점 인구 앵커 — 매우 중요]
 한국 일반 골퍼 분포는 대략 다음과 같습니다. 이 비율을 머릿속에 두고 채점하세요.
@@ -161,41 +275,97 @@ const HEAD_JUDGE_PROMPT = `당신은 ${HEAD_COACH.name}입니다. ${HEAD_COACH.v
 - 한 시점만 있어도 정상 동작하지만, note에 "정면 미제공으로 스웨이 단정 어려움" 같은
   관찰 한계를 명시하세요.
 
-1) 클럽 자동 인식 — 정형 관찰 → 단서 투표 → 분류
-   자유 형식 추론을 금지합니다. 반드시 아래 절차를 순서대로 따릅니다.
+1) 클럽 자동 인식 — 정형 관찰만 정확히 채우세요. 분류는 서버가 결정합니다.
 
-   [1-A) 어드레스 정지 단서 (영상 시작 0~2초 사이 가장 정지된 프레임)]
-   다음 6개 항목을 정해진 enum 보기 중 하나로만 채웁니다. 보이지 않으면 "관찰 불가".
-   각 보기 옆 괄호는 그 보기가 가리키는 클럽입니다.
+   [핵심 원칙]
+   - 당신은 clubObservations 8개 항목만 정확히 채우면 됩니다.
+   - clubType / clubScores / clubConfidence는 형식상 함께 출력하되,
+     **서버가 clubObservations만 보고 가중 알고리즘으로 최종 분류**합니다.
+     당신의 clubType 출력이 서버 결정과 달라도 무방.
+   - 확실하지 않으면 무조건 "관찰 불가". 추측·짐작 금지.
+   - 8개 항목을 모두 빠짐없이 채워야 합니다 (값 또는 "관찰 불가").
 
-     · tee:           "높은 티"(driver) | "낮은 티"(driver/iron) | "티 없음"(iron/approach) | "관찰 불가"
-     · ballPosition:  "앞발 안쪽"(driver) | "스탠스 중앙-약간 왼쪽"(iron) | "스탠스 중앙/뒤"(approach) | "관찰 불가"
-     · stanceWidth:   "어깨보다 넓음"(driver) | "어깨 너비"(iron) | "어깨보다 좁음"(approach) | "관찰 불가"
-     · spineAngle:    "거의 수직"(driver) | "중간 정도 숙임"(iron) | "많이 숙임"(approach) | "관찰 불가"
-     · clubLength:    "긴 편"(driver) | "중간"(iron) | "짧음"(approach) | "관찰 불가"
-     · headShape:     "큰 둥근 헤드"(driver) | "얇은 블레이드"(iron) | "누운 큰 로프트 면"(approach) | "관찰 불가"
+   [단서별 가중치 — 서버에서 적용]
+   ★★ headShape (헤드 모양):  가중치 3 — 가장 결정적. 신중히 보세요.
+   ★★ clubLength (클럽 길이): 가중치 3 — 결정적.
+   ★  tee, ballPosition:      가중치 2 — 강한 단서.
+        stanceWidth, spineAngle, swingArc, swingTempo: 가중치 1 — 보조.
 
-   [1-B) 동적 단서 (스윙 중)]
-     · swingArc:      "큰 호"(driver) | "중간"(iron) | "컴팩트한 작은 호"(approach) | "관찰 불가"
-     · swingTempo:    "느리고 부드러움"(driver) | "중간"(iron) | "짧고 빠름"(approach) | "관찰 불가"
+   [enum 값 — 정확한 이 문자열만 사용]
 
-   [1-C) 단서 투표 — clubScores]
-   위 8개 단서가 각 클럽을 가리킨 횟수를 정확히 카운트해서 적습니다.
-   "관찰 불가"는 어디에도 카운트하지 않습니다.
-   예: { "driver": 4, "iron": 2, "approach": 0 }
+   ## 어드레스 정지 단서
 
-   [1-D) 분류 결정]
-   - clubType은 clubScores에서 가장 높은 클럽으로 결정합니다.
-   - clubConfidence:
-     · 1위가 5개↑ + 2위와 3개↑ 차이 → 0.85~0.95
-     · 1위가 3-4개 + 2위와 1-2개 차이 → 0.6~0.8
-     · 동률 또는 1개 차이, 또는 관찰 불가가 4개↑ → 0.3~0.5
-   - clubCues에는 실제 관찰된(관찰 불가가 아닌) 단서 3~5개를 짧게 적습니다.
+   ▶ tee (티 사용/높이)
+     · "높은 티"     → 자동 티업이 공을 5cm 이상 올림. **드라이버 전용**.
+     · "낮은 티"     → 공이 매트보다 1~2cm만 위. 아이언용.
+     · "티 없음"     → 공이 매트/잔디 표면에 직접. (모호 — 다른 단서가 결정)
+     · "관찰 불가"   → 명확히 안 보임.
 
-   [1-E) 사용자 지정 우선]
-   사용자가 클럽을 직접 지정한 경우 위 절차 결과는 무시:
-   clubType=지정값, clubConfidence=1.0, clubCues=["사용자가 직접 지정함"].
-   (clubObservations와 clubScores는 그대로 채워서 출력 — 참고용)
+   ▶ ballPosition (스탠스 내 공 위치)
+     · "앞발 안쪽"              → 왼발(타깃쪽) 안쪽 가까이. 드라이버.
+     · "스탠스 중앙-약간 왼쪽"   → 두 발 중앙 ~ 살짝 왼쪽. 아이언.
+     · "스탠스 중앙/뒤"          → 중앙 또는 오른발쪽. 어프로치.
+     · "관찰 불가"
+
+   ▶ stanceWidth (스탠스 폭)
+     · "어깨보다 넓음"   → 두 발이 어깨선 바깥. 드라이버.
+     · "어깨 너비"      → 어깨와 거의 같은 폭. 아이언.
+     · "어깨보다 좁음"   → 어깨보다 안쪽. 어프로치.
+     · "관찰 불가"
+
+   ▶ spineAngle (어드레스 시 척추 기울기)
+     · "거의 수직"        → 상체가 거의 안 숙음 (어퍼 어택). 드라이버.
+     · "중간 정도 숙임"   → 일반적 어드레스. 아이언.
+     · "많이 숙임"        → 상체 굽음 + 무릎 더 굽음. 어프로치.
+     · "관찰 불가"
+
+   ▶ clubLength (클럽 길이) ★★ 가중치 3
+     · "긴 편"   → 그립이 골퍼 허리 윗부분, 헤드가 발에서 멀리. 44~46인치 드라이버.
+     · "중간"    → 그립이 허리 부근, 헤드가 발 앞 가까이. 35~38인치 아이언.
+     · "짧음"    → 그립이 허리 아래, 헤드가 발 바로 앞. 33~35인치 웨지.
+     · "관찰 불가"
+
+   ▶ headShape (헤드 모양) ★★★ 가장 결정적 가중치 3
+     · "큰 둥근 헤드"
+        → 드라이버. 헤드 부피 매우 큼(450cc+), 둥글고 페이스 면적이 큼.
+          종종 메탈릭/검정. 헤드 깊이 깊음. 페이스가 거의 직각으로 서있음.
+     · "얇은 블레이드"
+        → 아이언. 헤드가 얇고 평평한 직사각형. 페이스 면적 작음.
+          헤드 길이가 발끝쪽으로 길게 뻗음. 페이스 각도는 중간(20~40도).
+     · "누운 큰 로프트 면"
+        → 웨지/어프로치. 클럽 페이스가 거의 누워있는 듯 위쪽으로 향함.
+          헤드 길이는 아이언보다 약간 짧음. 페이스 각도 50~60도.
+     · "관찰 불가"
+
+   ## 동적 단서 (스윙 중)
+
+   ▶ swingArc (스윙 호의 크기)
+     · "큰 호"               → 헤드 궤적이 크고 폭넓음. 드라이버.
+     · "중간"                → 적당한 호. 아이언.
+     · "컴팩트한 작은 호"     → 호가 작고 짧음. 어프로치.
+     · "관찰 불가"
+
+   ▶ swingTempo (스윙 템포)
+     · "느리고 부드러움"   → 긴 클럽이라 천천히. 드라이버.
+     · "중간"             → 평균. 아이언.
+     · "짧고 빠름"        → 컴팩트하게. 어프로치.
+     · "관찰 불가"
+
+   [시점 우선순위 — 멀티뷰일 때 충돌 처리]
+   - **headShape, clubLength, ballPosition, spineAngle** → 측면샷 우선 (각도가 명확)
+   - **stanceWidth** → 정면샷 우선 (좌우 폭을 직접 봄)
+   - 한 시점만 있어도 답할 수 있는 항목은 그 시점 기준으로 채움.
+   - 둘 다 안 보이면 "관찰 불가".
+
+   [출력 형식 보조 필드]
+   - clubType: 당신이 관찰을 보고 추론한 클럽. 서버가 가중 분류 결과와 비교만 함.
+   - clubScores: 임의로 채워도 됨 (서버에서 재계산하므로 무시됨).
+   - clubConfidence: 임의로 채워도 됨 (서버에서 재계산).
+   - clubCues: 실제 관찰된(관찰 불가가 아닌) 단서 3~5개를 짧은 한국어로.
+     예: "큰 둥근 헤드", "어깨보다 넓은 스탠스", "높은 티", "큰 호의 스윙".
+
+   [사용자 지정 우선]
+   사용자가 클럽을 직접 지정한 경우 위 절차는 형식상 채우되 서버에서 지정값으로 강제됩니다.
 
 2) 매커니즘 8항목 채점 (보수적 채점 원칙)
 ${RUBRIC}
@@ -849,46 +1019,40 @@ async function runHeadJudge(
 
   const allowedClubs: ClubType[] = ["driver", "iron", "approach"];
 
-  // 1) 정형 관찰 표 + 투표 점수 추출
+  // 1) 정형 관찰 표 추출 (LLM clubScores 출력은 무시)
   const observations = (obj.clubObservations ?? null) as Record<string, string> | null;
-  const scoresRaw = (obj.clubScores ?? {}) as Record<string, unknown>;
-  const voteScores: Record<ClubType, number> = {
-    driver: Math.max(0, Math.round(Number(scoresRaw.driver ?? 0))),
-    iron: Math.max(0, Math.round(Number(scoresRaw.iron ?? 0))),
-    approach: Math.max(0, Math.round(Number(scoresRaw.approach ?? 0))),
-  };
-  const voteSum = voteScores.driver + voteScores.iron + voteScores.approach;
-  const voteWinner = (Object.entries(voteScores) as [ClubType, number][])
-    .sort((a, b) => b[1] - a[1])[0]?.[0] as ClubType | undefined;
 
-  // 2) 클럽 결정: 사용자 지정 > 투표 1위 > Gemini 선언 순
-  let clubType: ClubType = (allowedClubs.includes(obj.clubType as ClubType)
-    ? (obj.clubType as ClubType)
-    : "iron") as ClubType;
-  if (voteWinner && voteSum >= 3 && clubType !== voteWinner) {
-    // Gemini의 분류가 자기 투표와 모순되면 투표 1위로 강제 교정
-    clubType = voteWinner;
-  }
-  if (clubHint) clubType = clubHint;
+  // 2) 서버측 가중 분류기로 클럽 결정. LLM clubType/clubScores는 fallback 용도.
+  const classification = classifyClubFromObservations(observations);
 
-  // 3) 신뢰도: 사용자 지정 시 1.0, 그 외 투표 마진으로 재계산
+  let clubType: ClubType;
   let clubConfidence: number;
+  let voteScores: Record<ClubType, number>;
+
   if (clubHint) {
-    clubConfidence = 1;
-  } else if (voteSum >= 3) {
-    const sorted = Object.values(voteScores).sort((a, b) => b - a);
-    const margin = sorted[0] - sorted[1];
-    if (voteSum >= 5 && margin >= 3) clubConfidence = 0.9;
-    else if (voteSum >= 3 && margin >= 1) clubConfidence = 0.7;
-    else clubConfidence = 0.45;
+    // 사용자 지정 최우선
+    clubType = clubHint;
+    clubConfidence = 1.0;
+    voteScores = classification?.scores ?? { driver: 0, iron: 0, approach: 0 };
+  } else if (classification) {
+    // 서버 가중 분류기 결과 사용
+    clubType = classification.clubType;
+    clubConfidence = classification.confidence;
+    voteScores = classification.scores;
   } else {
-    clubConfidence = Math.max(0, Math.min(1, Number(obj.clubConfidence ?? 0.5)));
+    // 관찰이 너무 부족 → LLM 출력을 fallback으로 사용
+    clubType = (allowedClubs.includes(obj.clubType as ClubType)
+      ? (obj.clubType as ClubType)
+      : "iron") as ClubType;
+    clubConfidence = Math.max(0, Math.min(1, Number(obj.clubConfidence ?? 0.4)));
+    voteScores = { driver: 0, iron: 0, approach: 0 };
   }
 
   const cuesRaw = obj.clubCues;
   const clubCues = Array.isArray(cuesRaw)
     ? cuesRaw.map((c) => String(c).trim()).filter(Boolean).slice(0, 6)
     : [];
+  const voteSum = voteScores.driver + voteScores.iron + voteScores.approach;
   return {
     clubType,
     clubConfidence,
