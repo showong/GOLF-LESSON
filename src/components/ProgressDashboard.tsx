@@ -98,6 +98,11 @@ function ClubSection({ section }: { section: Section }) {
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-medium text-fairway-900">
                     {GRADE_KR[r.grade]} LV-{r.level}
+                    {r.analysis?.provisional && (
+                      <span className="ml-1 rounded bg-amber-100 px-1 py-0.5 text-[10px] font-semibold text-amber-700">
+                        잠정
+                      </span>
+                    )}
                   </span>
                   <span className="text-fairway-700/60">
                     {new Date(r.createdAt).toLocaleDateString("ko-KR")}
@@ -106,11 +111,14 @@ function ClubSection({ section }: { section: Section }) {
                 <div className="mt-0.5 text-fairway-700/80">
                   {r.oneLineSummary}
                 </div>
-                {next && (
-                  <div className="mt-1 text-[11px] text-fairway-700/60">
-                    이전 대비 {arrow}
-                  </div>
-                )}
+                <div className="mt-1 flex items-center gap-2 text-[11px] text-fairway-700/60">
+                  {typeof r.analysis?.mechanicsWeighted === "number" && (
+                    <span className="font-semibold text-fairway-700">
+                      가중 {Math.round(r.analysis.mechanicsWeighted * 10) / 10}/30
+                    </span>
+                  )}
+                  {next && <span>이전 대비 {arrow}</span>}
+                </div>
               </li>
             );
           })}

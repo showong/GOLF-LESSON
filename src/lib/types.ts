@@ -60,6 +60,8 @@ export interface SwingPoint {
   title: string;
   detail: string;
   emphasis?: "key" | "normal";
+  /** 이 진단의 관찰 근거 (프레임/위상/부위 인용). 약점 항목은 필수 */
+  evidence?: string;
 }
 
 export interface SwingFocus {
@@ -72,8 +74,36 @@ export interface ReviewBreakdown {
   gradeMatch: number;
   clubSpecific: number;
   mechanicsAlignment: number;
+  /** 개별성(바넘 테스트): 다른 골퍼에게 복사해도 성립하는 일반론이면 감점 */
+  individuality?: number;
   drillFit: number;
   conciseness: number;
+}
+
+/** 신체 부위별 전문 분석관 보고서 */
+export type BodyRegion = "lower" | "upper" | "axis";
+
+export const BODY_REGION_LABEL: Record<BodyRegion, string> = {
+  lower: "하체 (발·무릎·골반)",
+  upper: "상체 (어깨·팔·손목)",
+  axis: "축 (머리·척추각)",
+};
+
+export interface RegionReport {
+  region: BodyRegion;
+  /** 위상별 정형 관찰: { phase, item, value } */
+  observations: { phase: string; item: string; value: string }[];
+  /** 스윙 내 자기 비교 (어드레스 vs 임팩트 등) */
+  selfComparisons: string[];
+  /** 이 부위에서 발견된 특이사항 */
+  flags: string[];
+}
+
+/** 지난 분석의 topFocus 숙제 검사 결과 */
+export interface HomeworkCheck {
+  previousFocus: string;
+  verdict: "improved" | "same" | "regressed" | "not_observable";
+  comment: string;
 }
 
 export interface ReviewResult {
@@ -116,6 +146,13 @@ export interface SwingAnalysis {
   mechanicsWeighted?: number;
   /** 자기보정 단계에서 점수 조정이 있었는지 + 사유 */
   calibrationNote?: string;
+  /** 부위별 전문 분석관 3인의 관찰 보고서 */
+  regionReports?: RegionReport[];
+  /** 지난 topFocus 숙제 검사 (이전 기록이 있을 때만) */
+  homeworkCheck?: HomeworkCheck | null;
+  /** 입력 품질(신뢰도·관찰 한계) 미달 시 잠정 등급 표시 */
+  provisional?: boolean;
+  provisionalReason?: string;
   topFocus: SwingFocus;
   strengths: SwingPoint[];
   weaknesses: SwingPoint[];
@@ -233,6 +270,37 @@ export function scoreToGradeLevel(
   }
 
   return { grade, level, total, weighted, gateNote };
+}
+
+/**
+ * 성장 게이지: 현재 가중 점수에서 다음 단계 경계까지 남은 점수.
+ * 등급은 엄격하게 유지하되, 세밀한 진척을 사용자에게 보여주기 위한 용도.
+ */
+export function nextLevelTarget(weighted: number): {
+  nextAt: number | null;
+  toNext: number | null;
+  nextLabel: string | null;
+} {
+  const thresholds: { at: number; label: string }[] = [
+    { at: 4, label: "골린이 LV-2" },
+    { at: 7, label: "골린이 LV-3" },
+    { at: 10, label: "아마추어 LV-1" },
+    { at: 14, label: "아마추어 LV-2" },
+    { at: 17, label: "아마추어 LV-3" },
+    { at: 20, label: "세미프로 LV-1" },
+    { at: 22, label: "세미프로 LV-2" },
+    { at: 25, label: "세미프로 LV-3" },
+    { at: 27, label: "프로 LV-1" },
+    { at: 28, label: "프로 LV-2" },
+    { at: 30, label: "프로 LV-3" },
+  ];
+  const next = thresholds.find((t) => weighted < t.at);
+  if (!next) return { nextAt: null, toNext: null, nextLabel: null };
+  return {
+    nextAt: next.at,
+    toNext: Math.round((next.at - weighted) * 10) / 10,
+    nextLabel: next.label,
+  };
 }
 
 export interface ProgressDelta {

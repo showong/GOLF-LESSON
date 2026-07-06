@@ -95,30 +95,41 @@ async function extractSingleFrame(
   });
 }
 
+/** Gemini 위상 감지 결과: 각 스윙 단계의 타임스탬프(초) */
+export type PhaseTimestamps = Partial<Record<SwingPhase, number>>;
+
 /**
  * 스윙 영상에서 5개 키 프레임을 추출해 base64 JPEG으로 반환한다.
- * 영상 길이의 10/30/50/70/90% 지점을 사용한다.
+ * timestamps가 주어지면 해당 위상의 실제 타임스탬프를 사용하고 (2-pass 정밀 추출),
+ * 없으면 영상 길이의 10/30/50/70/90% 지점으로 폴백한다.
  */
 export async function extractKeyFrames(
   videoPath: string,
   view: VideoView,
+  timestamps?: PhaseTimestamps,
 ): Promise<ExtractedFrame[]> {
   const duration = await getVideoDurationSec(videoPath);
   const tmpDir = path.join(os.tmpdir(), `gtutor-frames-${uuidv4()}`);
   await fs.mkdir(tmpDir, { recursive: true });
+
+  const clamp = (t: number) =>
+    Math.max(0, Math.min(Math.max(0, duration - 0.05), t));
 
   try {
     const viewLabel = VIDEO_VIEW_LABEL[view];
     const frames: ExtractedFrame[] = [];
     for (let i = 0; i < PHASES.length; i++) {
       const { ratio, phase, label } = PHASES[i];
-      const ts = Math.max(0, Math.min(Math.max(0, duration - 0.05), duration * ratio));
+      const detected = timestamps?.[phase];
+      const usedDetected =
+        typeof detected === "number" && Number.isFinite(detected) && detected >= 0;
+      const ts = clamp(usedDetected ? detected : duration * ratio);
       const out = path.join(tmpDir, `f${i}.jpg`);
       await extractSingleFrame(videoPath, ts, out);
       const data = await fs.readFile(out);
       frames.push({
         view,
-        label: `${viewLabel} ${i + 1}/${PHASES.length} ${label} (t=${ts.toFixed(2)}s)`,
+        label: `${viewLabel} ${i + 1}/${PHASES.length} ${label} (t=${ts.toFixed(2)}s${usedDetected ? ", 위상 감지" : ""})`,
         phase,
         timestampSec: ts,
         base64: data.toString("base64"),

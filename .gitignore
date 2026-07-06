@@ -17,3 +17,4 @@ data/*.db-wal
 data/*.db-shm
 uploads/
 tmp/
+tsconfig.tsbuildinfo

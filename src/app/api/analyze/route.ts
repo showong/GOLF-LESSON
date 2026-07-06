@@ -9,10 +9,19 @@ import {
   recentSummaryForClub,
   saveAnalysis,
 } from "@/lib/db";
-import { analyzeSwingVideo, type AnalyzeVideo } from "@/lib/gemini";
+import {
+  analyzeSwingVideo,
+  type AnalyzeVideo,
+  type PreviousAnalysisContext,
+} from "@/lib/gemini";
 import { findRecommendations } from "@/lib/youtube";
 import { getCoach, HEAD_COACH } from "@/lib/coaches";
-import { CLUB_LABEL, GRADE_LABEL } from "@/lib/types";
+import {
+  CLUB_LABEL,
+  GRADE_LABEL,
+  MECHANICS_DIMENSIONS,
+  nextLevelTarget,
+} from "@/lib/types";
 import type { ClubType, VideoView } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -110,6 +119,23 @@ export async function POST(req: Request) {
       recentSummaryForClub(user.id, c, 2).map((h) => ({ ...h, clubType: c })),
     );
 
+    // 숙제 검사용: 클럽별 직전 분석의 topFocus + 항목 점수.
+    // 아직 클럽을 모르므로 세 클럽 모두 조회하고 판정 후 해당 클럽 것만 사용됨.
+    const previousByClub: Partial<Record<ClubType, PreviousAnalysisContext>> = {};
+    for (const c of ["driver", "iron", "approach"] as ClubType[]) {
+      const prevRec = previousForClub(user.id, c);
+      if (prevRec?.analysis?.topFocus?.title) {
+        previousByClub[c] = {
+          createdAt: prevRec.createdAt,
+          topFocusTitle: prevRec.analysis.topFocus.title,
+          mechanicsScores: (prevRec.analysis.mechanicsScores ?? []).map((s) => ({
+            dim: s.dim,
+            score: s.score,
+          })),
+        };
+      }
+    }
+
     const videos: AnalyzeVideo[] = saved.map((s) => ({
       view: s.view,
       filePath: s.tmpPath,
@@ -121,6 +147,7 @@ export async function POST(req: Request) {
       videos,
       clubHint,
       history,
+      previousByClub,
     });
 
     // 추천 영상 검색 (실패해도 분석 결과는 그대로 전달)
@@ -141,12 +168,31 @@ export async function POST(req: Request) {
     const delta = computeDelta(prev, record);
     const coach = getCoach(analysis.grade);
 
+    // 성장 게이지: 다음 단계까지 남은 가중 점수 + 항목별 변화(이전 분석 대비)
+    const target = nextLevelTarget(analysis.mechanicsWeighted ?? 0);
+    const prevScores = prev?.analysis?.mechanicsScores;
+    const dimensionDeltas = prevScores
+      ? MECHANICS_DIMENSIONS.map((d) => ({
+          dim: d,
+          prev: prevScores.find((s) => s.dim === d)?.score ?? null,
+          current:
+            analysis.mechanicsScores.find((s) => s.dim === d)?.score ?? null,
+        }))
+      : null;
+
     return NextResponse.json({
       user,
       record,
       delta,
       coach,
       headCoach: HEAD_COACH,
+      progress: {
+        weighted: analysis.mechanicsWeighted ?? null,
+        nextAt: target.nextAt,
+        toNext: target.toNext,
+        nextLabel: target.nextLabel,
+        dimensionDeltas,
+      },
       labels: {
         club: CLUB_LABEL[analysis.clubType],
         grade: GRADE_LABEL[analysis.grade],

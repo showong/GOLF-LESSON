@@ -62,7 +62,7 @@ export default function HomePage() {
         }}
       />
 
-      {result && (
+      {result != null && (
         <div id="analysis-result">
           <AnalysisResult
             data={result as Parameters<typeof AnalysisResult>[0]["data"]}
