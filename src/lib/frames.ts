@@ -4,7 +4,11 @@ import path from "node:path";
 import os from "node:os";
 import { v4 as uuidv4 } from "uuid";
 import ffmpegPathImport from "ffmpeg-static";
-import { VIDEO_VIEW_LABEL, type VideoView } from "./types";
+import {
+  VIDEO_VIEW_LABEL,
+  type VideoQualityReport,
+  type VideoView,
+} from "./types";
 
 // ffmpeg-static은 default export로 binary 경로 문자열을 줌(미지원 플랫폼은 null).
 const ffmpegPath = ffmpegPathImport as unknown as string | null;
@@ -21,6 +25,8 @@ export interface ExtractedFrame {
   /** base64 인코딩된 JPEG 데이터 */
   base64: string;
   mimeType: "image/jpeg";
+  /** 임팩트 기준 상대 프레임. 일반 키프레임은 0 */
+  frameOffset?: number;
 }
 
 export type SwingPhase =
@@ -45,7 +51,14 @@ function ensureBinary(): string {
   return ffmpegPath;
 }
 
-async function getVideoDurationSec(filePath: string): Promise<number> {
+export interface VideoMetadata {
+  durationSec: number;
+  width: number;
+  height: number;
+  fps: number;
+}
+
+export async function inspectVideoMetadata(filePath: string): Promise<VideoMetadata> {
   return new Promise((resolve, reject) => {
     const proc = spawn(ensureBinary(), ["-hide_banner", "-i", filePath]);
     let stderr = "";
@@ -61,9 +74,46 @@ async function getVideoDurationSec(filePath: string): Promise<number> {
       }
       const [, h, m, s] = match;
       const seconds = parseInt(h, 10) * 3600 + parseInt(m, 10) * 60 + parseFloat(s);
-      resolve(seconds);
+      const videoLine = stderr.split("\n").find((line) => /Video:/.test(line)) ?? "";
+      const sizeMatch = videoLine.match(/(\d{2,5})x(\d{2,5})/);
+      const fpsMatch = videoLine.match(/([\d.]+)\s*fps/);
+      if (!sizeMatch) {
+        return reject(new Error("ffmpeg: 영상 해상도를 파싱할 수 없습니다."));
+      }
+      resolve({
+        durationSec: seconds,
+        width: Number(sizeMatch[1]),
+        height: Number(sizeMatch[2]),
+        fps: fpsMatch ? Number(fpsMatch[1]) : 30,
+      });
     });
   });
+}
+
+export function technicalQualityReport(
+  view: VideoView,
+  metadata: VideoMetadata,
+): VideoQualityReport {
+  const warnings: string[] = [];
+  const shortEdge = Math.min(metadata.width, metadata.height);
+  if (shortEdge < 720) warnings.push("720p 미만이라 손목·클럽 판독 정확도가 낮아질 수 있어요");
+  if (metadata.fps < 50) warnings.push("60fps 미만이라 임팩트 순간 판독 신뢰도가 낮아질 수 있어요");
+  if (metadata.durationSec > 30) warnings.push("영상이 길어 본 스윙 탐색 오차가 커질 수 있어요");
+  if (metadata.durationSec < 1) warnings.push("영상이 너무 짧아 전체 스윙을 확인하기 어려워요");
+  return {
+    view,
+    width: metadata.width,
+    height: metadata.height,
+    fps: metadata.fps,
+    durationSec: metadata.durationSec,
+    mainSwingFound: true,
+    framing: "unknown",
+    clubVisible: null,
+    ballVisible: null,
+    stable: null,
+    warnings,
+    passed: metadata.durationSec >= 1 && shortEdge >= 360,
+  };
 }
 
 async function extractSingleFrame(
@@ -72,12 +122,12 @@ async function extractSingleFrame(
   outPath: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    // -ss를 -i 앞에 두면 input seek로 빠르지만 약간 부정확.
-    // 어드레스 등은 정지 구간이라 충분히 정확함.
+    // -ss를 -i 뒤에 두어 디코딩 후 정확한 프레임 위치에서 추출한다.
+    // 임팩트 전후 버스트는 속도보다 프레임 정확도가 중요하다.
     const proc = spawn(ensureBinary(), [
       "-y",
-      "-ss", timestampSec.toFixed(3),
       "-i", inputPath,
+      "-ss", timestampSec.toFixed(6),
       "-frames:v", "1",
       "-vf", "scale=720:-2",
       "-q:v", "3",
@@ -99,7 +149,7 @@ async function extractSingleFrame(
 export type PhaseTimestamps = Partial<Record<SwingPhase, number>>;
 
 /**
- * 스윙 영상에서 5개 키 프레임을 추출해 base64 JPEG으로 반환한다.
+ * 스윙 영상에서 5개 기본 위상과 임팩트 전후 버스트 프레임을 추출한다.
  * timestamps가 주어지면 해당 위상의 실제 타임스탬프를 사용하고 (2-pass 정밀 추출),
  * 없으면 영상 길이의 10/30/50/70/90% 지점으로 폴백한다.
  */
@@ -108,7 +158,9 @@ export async function extractKeyFrames(
   view: VideoView,
   timestamps?: PhaseTimestamps,
 ): Promise<ExtractedFrame[]> {
-  const duration = await getVideoDurationSec(videoPath);
+  const metadata = await inspectVideoMetadata(videoPath);
+  const duration = metadata.durationSec;
+  const fps = Math.max(1, metadata.fps);
   const tmpDir = path.join(os.tmpdir(), `gtutor-frames-${uuidv4()}`);
   await fs.mkdir(tmpDir, { recursive: true });
 
@@ -123,7 +175,9 @@ export async function extractKeyFrames(
       const detected = timestamps?.[phase];
       const usedDetected =
         typeof detected === "number" && Number.isFinite(detected) && detected >= 0;
-      const ts = clamp(usedDetected ? detected : duration * ratio);
+      const rawTs = clamp(usedDetected ? detected : duration * ratio);
+      // 실제 영상 프레임 경계로 스냅해 재실행 시 같은 프레임을 사용한다.
+      const ts = clamp(Math.round(rawTs * fps) / fps);
       const out = path.join(tmpDir, `f${i}.jpg`);
       await extractSingleFrame(videoPath, ts, out);
       const data = await fs.readFile(out);
@@ -134,7 +188,28 @@ export async function extractKeyFrames(
         timestampSec: ts,
         base64: data.toString("base64"),
         mimeType: "image/jpeg",
+        frameOffset: 0,
       });
+
+      // 임팩트는 단일 프레임 대신 전후 3프레임을 추가해 손-헤드 관계와
+      // 자세 변화가 타임스탬프 오차에 좌우되지 않도록 한다.
+      if (phase === "impact") {
+        for (const offset of [-3, -2, -1, 1, 2, 3]) {
+          const burstTs = clamp(ts + offset / fps);
+          const burstOut = path.join(tmpDir, `f${i}-impact-${offset}.jpg`);
+          await extractSingleFrame(videoPath, burstTs, burstOut);
+          const burstData = await fs.readFile(burstOut);
+          frames.push({
+            view,
+            label: `${viewLabel} 임팩트 ${offset > 0 ? "+" : ""}${offset}프레임 (t=${burstTs.toFixed(3)}s)`,
+            phase: "impact",
+            timestampSec: burstTs,
+            base64: burstData.toString("base64"),
+            mimeType: "image/jpeg",
+            frameOffset: offset,
+          });
+        }
+      }
     }
     return frames;
   } finally {

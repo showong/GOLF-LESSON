@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface Props {
   nickname: string;
@@ -71,6 +71,7 @@ export default function VideoUpload({ nickname, onResult }: Props) {
           title="측면샷"
           recommended
           hint="플레인·자세각·임팩트 분석에 가장 유리"
+          view="side"
         />
         <FileSlot
           inputRef={frontRef}
@@ -79,6 +80,7 @@ export default function VideoUpload({ nickname, onResult }: Props) {
           title="정면샷"
           recommended={false}
           hint="정렬·머리 움직임·스웨이 분석에 유리"
+          view="front"
         />
       </div>
 
@@ -161,6 +163,7 @@ function FileSlot({
   title,
   recommended,
   hint,
+  view,
 }: {
   inputRef: React.RefObject<HTMLInputElement>;
   file: File | null;
@@ -168,7 +171,26 @@ function FileSlot({
   title: string;
   recommended: boolean;
   hint: string;
+  view: "side" | "front";
 }) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [videoInfo, setVideoInfo] = useState<{
+    width: number;
+    height: number;
+    duration: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!file) {
+      setPreviewUrl(null);
+      setVideoInfo(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+
   function pickFromGallery() {
     inputRef.current?.click();
   }
@@ -207,6 +229,52 @@ function FileSlot({
         )}
       </div>
       <p className="mt-0.5 text-[11px] text-fairway-700/70">{hint}</p>
+
+      <div className="relative mt-3 aspect-video overflow-hidden rounded-lg bg-slate-900">
+        {previewUrl ? (
+          <video
+            src={previewUrl}
+            className="h-full w-full object-contain"
+            muted
+            playsInline
+            controls
+            onLoadedMetadata={(e) => {
+              const el = e.currentTarget;
+              setVideoInfo({
+                width: el.videoWidth,
+                height: el.videoHeight,
+                duration: el.duration,
+              });
+            }}
+          />
+        ) : (
+          <div className="flex h-full items-center justify-center px-8 text-center text-[11px] leading-relaxed text-white/70">
+            {view === "side"
+              ? "카메라는 손 높이 · 타깃 라인과 평행 · 전신과 클럽 헤드가 모두 보이게"
+              : "카메라는 가슴 높이 · 몸 정면 · 양발과 클럽 전체가 모두 보이게"}
+          </div>
+        )}
+        <div className="pointer-events-none absolute inset-[8%] rounded-lg border border-dashed border-emerald-300/80" />
+        <div className="pointer-events-none absolute bottom-[10%] left-[12%] right-[12%] border-t border-emerald-300/70" />
+        <div className="pointer-events-none absolute bottom-[10%] left-1/2 top-[8%] border-l border-emerald-300/50" />
+        <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
+          머리·발·클럽이 점선 안쪽
+        </span>
+      </div>
+
+      {videoInfo && (
+        <div className="mt-2 flex flex-wrap gap-1 text-[10px]">
+          <span className={`rounded px-1.5 py-0.5 ${Math.min(videoInfo.width, videoInfo.height) >= 720 ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>
+            {videoInfo.width}×{videoInfo.height}
+          </span>
+          <span className={`rounded px-1.5 py-0.5 ${videoInfo.duration >= 1 && videoInfo.duration <= 30 ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>
+            {videoInfo.duration.toFixed(1)}초
+          </span>
+          <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-700">
+            서버에서 fps·전신·클럽 노출 추가 검사
+          </span>
+        </div>
+      )}
 
       {/* 갤러리 선택 (기본) */}
       <input

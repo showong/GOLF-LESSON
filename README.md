@@ -40,8 +40,10 @@
 - **프레임워크**: Next.js 14 (App Router) + TypeScript + Tailwind CSS
 - **AI**: Google Gemini 3.1 (`@google/generative-ai`) — File API로 영상 업로드
   후 멀티모달 분석
-- **영상 전처리**: ffmpeg (`ffmpeg-static`) — 어드레스/탑/임팩트/피니시 5개 키 프레임
-  추출 후 헤드코치 판정 단계에 정지 이미지로 함께 전달 (클럽 인식 정확도 ↑)
+- **영상 전처리**: ffmpeg (`ffmpeg-static`) — 실제 fps에 맞춰 어드레스/탑/임팩트/피니시
+  키 프레임을 추출하고 임팩트 전후 ±3프레임 버스트를 함께 전달합니다.
+- **촬영 품질 게이트**: 해상도·fps·길이와 전신 프레이밍·클럽/볼 노출·카메라
+  안정성을 검사하고, 항목별 관찰 가능 여부와 신뢰도를 판정에 반영합니다.
 - **데이터**: SQLite (`better-sqlite3`) — 사용자/분석 요약을 로컬 파일에 저장
 - **UI 언어**: 한국어
 

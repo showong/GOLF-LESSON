@@ -9,6 +9,8 @@ import path from "node:path";
 import { COACHES, HEAD_COACH, type CoachPersona } from "./coaches";
 import {
   extractKeyFrames,
+  inspectVideoMetadata,
+  technicalQualityReport,
   type ExtractedFrame,
   type PhaseTimestamps,
 } from "./frames";
@@ -35,6 +37,7 @@ import type {
   SwingAnalysis,
   SwingFocus,
   SwingPoint,
+  VideoQualityReport,
   VideoView,
 } from "./types";
 
@@ -266,7 +269,13 @@ H) balance (밸런스·축 안정성) [기본기 가중치 ★]
 [일관성·반인플레이션 규칙]
 - 같은 영상은 같은 점수가 나와야 함. 영상 외 어떤 정보도 점수에 반영 금지.
 - 사용자의 이전 기록, 선입견, 동기부여 가산점 모두 절대 금지.
-- 영상에서 보이지 않는 항목은 보수적으로 1점, note에 "관찰 한계" 명시.
+- 영상에서 보이지 않는 항목은 score=null, observable=false, confidence=0으로 출력.
+- 관찰 불가를 낮은 실력으로 간주하지 마세요. 서버가 해당 항목을 등급 합계에서 제외합니다.
+- 관찰 가능한 항목은 observable=true, confidence=0~1을 반드시 함께 출력.
+  · 0.9~1.0: 두 시점 또는 연속 프레임에서 명확히 확인
+  · 0.7~0.89: 한 시점에서 명확히 확인
+  · 0.5~0.69: 보이지만 블러·가림·각도 한계가 있음
+  · 0.5 미만: 점수를 추측하지 말고 observable=false
 - 채점을 마친 뒤 한 번 더 검토: "내가 후하게 준 항목은 없는가?" 의심되면 한 단계 낮춤.
 - 평범한 주말 골퍼는 amateur LV-1~2가 정상. "조금 잘 친다" 인상이면 아마추어 LV-3.
 - 별도로 자기보정 단계가 또 한 번 점수를 검토합니다.
@@ -429,14 +438,14 @@ ${RUBRIC}
   "clubConfidence": number,
   "clubCues": [string, ...],
   "mechanicsScores": [
-    { "dim": "address",    "score": 0|1|2|3, "note": string },
-    { "dim": "takeaway",   "score": 0|1|2|3, "note": string },
-    { "dim": "top",        "score": 0|1|2|3, "note": string },
-    { "dim": "transition", "score": 0|1|2|3, "note": string },
-    { "dim": "impact",     "score": 0|1|2|3, "note": string },
-    { "dim": "finish",     "score": 0|1|2|3, "note": string },
-    { "dim": "tempo",      "score": 0|1|2|3, "note": string },
-    { "dim": "balance",    "score": 0|1|2|3, "note": string }
+    { "dim": "address",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "takeaway",   "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "top",        "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "transition", "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "impact",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "finish",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "tempo",      "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "balance",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string }
   ],
   "gradeRationale": string
 }`;
@@ -483,6 +492,7 @@ function buildCoachPrompt(
   previous?: PreviousAnalysisContext,
 ): string {
   const weakest = [...judgement.mechanicsScores]
+    .filter((m) => m.observable !== false)
     .sort((a, b) => a.score - b.score)
     .slice(0, 3)
     .map((m) => `${MECHANICS_LABEL[m.dim]}(${m.score}/3): ${m.note}`)
@@ -492,9 +502,10 @@ function buildCoachPrompt(
     ? `[숙제 검사 — 필수]
 이 사용자는 ${new Date(previous.createdAt).toLocaleDateString("ko-KR")}에 같은 클럽으로 분석을 받았고,
 그때의 #1 포커스(숙제)는 "${previous.topFocusTitle}"였습니다.
-당시 항목별 점수: ${previous.mechanicsScores.map((s) => `${MECHANICS_LABEL[s.dim as MechanicsDim] ?? s.dim} ${s.score}`).join(", ")}
+당시 항목별 점수: ${previous.mechanicsScores.map((s) => `${MECHANICS_LABEL[s.dim as MechanicsDim] ?? s.dim} ${s.observable === false ? "관찰 불가" : s.score}`).join(", ")}
 
 이번 영상·분석관 보고서·현재 점수를 근거로 숙제가 개선됐는지 판정하세요:
+- 이전 또는 현재의 관련 항목이 observable=false이면 개선을 추측하지 말고 not_observable.
 - verdict: "improved"(좋아짐) | "same"(비슷함) | "regressed"(나빠짐) | "not_observable"(이번 영상으론 판단 불가)
 - comment: 무엇이 어떻게 달라졌는지 1~2문장. 개선됐으면 구체적으로 칭찬,
   아니면 다정하지만 정확하게. coachMessage 첫머리에서도 숙제 결과를 자연스럽게 언급하세요.`
@@ -516,7 +527,7 @@ ${coach.preferredTerms.length ? coach.preferredTerms.map((t) => `"${t}"`).join("
 ${coach.lengthRule}
 
 [배정 컨텍스트 — 헤드코치 판정 결과]
-- 사용자 등급: ${GRADE_LABEL[grade]} LV-${level} (총 ${judgement.mechanicsScores.reduce((s, m) => s + m.score, 0)}/24점)
+- 사용자 등급: ${GRADE_LABEL[grade]} LV-${level} (관찰 가능 ${judgement.mechanicsScores.filter((m) => m.observable !== false).length}/8항목)
 - 사용 클럽: ${CLUB_LABEL[judgement.clubType]}
 - 헤드코치 판정 근거: ${judgement.gradeRationale}
 - 점수가 가장 낮은 3항목 (우선 교정 대상):
@@ -666,7 +677,12 @@ interface CoachOutput {
 export interface PreviousAnalysisContext {
   createdAt: string;
   topFocusTitle: string;
-  mechanicsScores: { dim: MechanicsDim; score: number }[];
+  mechanicsScores: {
+    dim: MechanicsDim;
+    score: number;
+    observable?: boolean;
+    confidence?: number;
+  }[];
 }
 
 // ---------- 유틸 ----------
@@ -688,11 +704,30 @@ function normalizeMechanics(raw: unknown): MechanicsScore[] {
   const byDim = new Map<MechanicsDim, MechanicsScore>();
   if (Array.isArray(raw)) {
     for (const item of raw) {
-      const r = item as { dim?: unknown; score?: unknown; note?: unknown };
+      const r = item as {
+        dim?: unknown;
+        score?: unknown;
+        note?: unknown;
+        observable?: unknown;
+        confidence?: unknown;
+      };
       const dim = String(r.dim ?? "") as MechanicsDim;
       if (!allowed.has(dim)) continue;
-      const score = Math.max(0, Math.min(3, Math.round(Number(r.score ?? 0)))) as 0 | 1 | 2 | 3;
-      byDim.set(dim, { dim, score, note: String(r.note ?? "").trim() });
+      const numericScore = Number(r.score);
+      const observable = r.observable !== false && r.score !== null && Number.isFinite(numericScore);
+      const score = (observable
+        ? Math.max(0, Math.min(3, Math.round(numericScore)))
+        : 1) as 0 | 1 | 2 | 3;
+      const confidence = observable
+        ? Math.max(0, Math.min(1, Number(r.confidence ?? 0.6)))
+        : 0;
+      byDim.set(dim, {
+        dim,
+        score,
+        note: String(r.note ?? "").trim() || (observable ? "관찰 근거 미기재" : "관찰 불가"),
+        observable,
+        confidence,
+      });
     }
   }
   return MECHANICS_DIMENSIONS.map(
@@ -701,6 +736,8 @@ function normalizeMechanics(raw: unknown): MechanicsScore[] {
         dim: d,
         score: 1 as const,
         note: "관찰 정보 부족으로 보수적으로 채움.",
+        observable: false,
+        confidence: 0,
       },
   );
 }
@@ -832,9 +869,9 @@ function makeModel(systemInstruction: string) {
 
 // ---------- Stage 0: 스윙 위상 감지 (2-pass 프레임 추출의 Pass 1) ----------
 
-const PHASE_DETECTION_PROMPT = `당신은 골프 스윙 영상에서 각 스윙 단계의 정확한 시점을 찾는 분석기입니다.
+const PHASE_DETECTION_PROMPT = `당신은 골프 스윙 영상에서 각 스윙 단계의 정확한 시점과 촬영 품질을 찾는 분석기입니다.
 영상에는 프리샷 루틴(왜글, 연습 스윙)이나 샷 이후 볼 궤적 확인 장면이 섞여 있을 수 있습니다.
-**실제 샷으로 이어지는 본 스윙 1회**를 찾아서 다음 5개 순간의 타임스탬프(초, 소수점 1자리)를 반환하세요.
+**실제 샷으로 이어지는 본 스윙 1회**를 찾아서 다음 5개 순간의 타임스탬프를 가능한 한 밀리초 단위로 반환하세요.
 
 - address: 본 스윙 직전, 클럽이 볼 뒤에 정지해 있는 마지막 순간
 - midBackswing: 백스윙 중 셔프트가 지면과 평행에 가까운 순간
@@ -846,20 +883,40 @@ const PHASE_DETECTION_PROMPT = `당신은 골프 스윙 영상에서 각 스윙 
 - 왜글이나 연습 스윙 중의 정지 장면을 address로 잡지 마세요. 본 스윙 직전이어야 합니다.
 - 특정 순간을 정확히 못 찾으면 그 필드만 null.
 - 영상에 스윙이 없으면 모든 필드 null.
+- framing은 머리부터 발, 손과 클럽 헤드까지 계속 보이면 full, 일부가 잘리면 partial.
+- clubVisible/ballVisible/stable은 확실하지 않으면 null.
 
 [출력 JSON — 이 형식만]
-{ "address": number|null, "midBackswing": number|null, "top": number|null, "impact": number|null, "finish": number|null }`;
+{
+  "address": number|null, "midBackswing": number|null, "top": number|null,
+  "impact": number|null, "finish": number|null,
+  "mainSwingFound": boolean,
+  "framing": "full"|"partial"|"unknown",
+  "clubVisible": boolean|null,
+  "ballVisible": boolean|null,
+  "stable": boolean|null,
+  "warnings": string[]
+}`;
+
+interface PhaseDetectionResult {
+  timestamps: PhaseTimestamps | null;
+  visual: Pick<
+    VideoQualityReport,
+    "mainSwingFound" | "framing" | "clubVisible" | "ballVisible" | "stable" | "warnings"
+  >;
+}
 
 async function runPhaseDetection(
   video: UploadedVideo,
-): Promise<PhaseTimestamps | null> {
+  fps: number,
+): Promise<PhaseDetectionResult> {
   const model = makeModel(PHASE_DETECTION_PROMPT);
   const result = await model.generateContent({
     contents: [
       {
         role: "user",
         parts: [
-          { text: "이 영상의 스윙 위상 타임스탬프를 JSON으로만 출력하세요." },
+          { text: `이 영상은 약 ${fps.toFixed(2)}fps입니다. 위상 타임스탬프와 촬영 품질을 JSON으로만 출력하세요.` },
           { fileData: { mimeType: video.mimeType, fileUri: video.uri } },
         ],
       },
@@ -877,13 +934,29 @@ async function runPhaseDetection(
     impact: num(obj.impact),
     finish: num(obj.finish),
   };
+  const warnings = Array.isArray(obj.warnings)
+    ? obj.warnings.map((w) => String(w).trim()).filter(Boolean).slice(0, 6)
+    : [];
+  const framing = ["full", "partial", "unknown"].includes(String(obj.framing))
+    ? (String(obj.framing) as "full" | "partial" | "unknown")
+    : "unknown";
+  const boolOrNull = (value: unknown): boolean | null =>
+    typeof value === "boolean" ? value : null;
+  const visual: PhaseDetectionResult["visual"] = {
+    mainSwingFound: obj.mainSwingFound !== false && Object.values(ts).some((v) => typeof v === "number"),
+    framing,
+    clubVisible: boolOrNull(obj.clubVisible),
+    ballVisible: boolOrNull(obj.ballVisible),
+    stable: boolOrNull(obj.stable),
+    warnings,
+  };
   // 시간 순서가 뒤집힌 감지 결과는 신뢰 불가 → 폐기
   const ordered = [ts.address, ts["mid-backswing"], ts.top, ts.impact, ts.finish]
     .filter((v): v is number => typeof v === "number");
   for (let i = 1; i < ordered.length; i++) {
-    if (ordered[i] < ordered[i - 1]) return null;
+    if (ordered[i] < ordered[i - 1]) return { timestamps: null, visual };
   }
-  return ordered.length >= 2 ? ts : null;
+  return { timestamps: ordered.length >= 2 ? ts : null, visual };
 }
 
 // ---------- Stage 0.5: 부위별 전문 분석관 (관찰 전용, 진단 금지) ----------
@@ -1018,6 +1091,24 @@ export async function analyzeSwingVideo(
     }
   }
 
+  // 업로드 전에 해상도·fps·길이를 검사한다. 판독 자체가 불가능한 파일만 차단하고,
+  // 권장 조건 미달은 분석 결과의 품질 경고와 항목별 신뢰도에 반영한다.
+  const videoMetadata = await Promise.all(
+    input.videos.map(async (v) => ({
+      view: v.view,
+      metadata: await inspectVideoMetadata(v.filePath),
+    })),
+  );
+  const videoQuality: VideoQualityReport[] = videoMetadata.map(({ view, metadata }) =>
+    technicalQualityReport(view, metadata),
+  );
+  const rejected = videoQuality.find((q) => !q.passed);
+  if (rejected) {
+    throw new Error(
+      `${VIDEO_VIEW_LABEL[rejected.view]} 영상 품질을 확인해 주세요: ${rejected.warnings.join(" · ") || "해상도 또는 길이가 분석 기준에 미달합니다"}`,
+    );
+  }
+
   const fileManager = new GoogleAIFileManager(apiKey());
 
   // 1) 각 영상 업로드
@@ -1063,9 +1154,24 @@ export async function analyzeSwingVideo(
     uploads.map(async (u, i) => {
       let timestamps: PhaseTimestamps | null = null;
       try {
-        timestamps = await runPhaseDetection(uploadedVideos[i]);
+        const detected = await runPhaseDetection(
+          uploadedVideos[i],
+          videoMetadata[i].metadata.fps,
+        );
+        timestamps = detected.timestamps;
+        videoQuality[i] = {
+          ...videoQuality[i],
+          ...detected.visual,
+          warnings: [...videoQuality[i].warnings, ...detected.visual.warnings],
+          passed:
+            videoQuality[i].passed &&
+            detected.visual.mainSwingFound &&
+            detected.visual.framing !== "partial" &&
+            detected.visual.clubVisible !== false,
+        };
       } catch (e) {
         console.warn(`위상 감지 실패 (${u.view}), 고정 비율로 폴백:`, e);
+        videoQuality[i].warnings.push("AI 촬영 품질 검사를 완료하지 못했어요");
       }
       return extractKeyFrames(u.filePath, u.view, timestamps ?? undefined).catch(
         (e: unknown) => {
@@ -1113,6 +1219,8 @@ export async function analyzeSwingVideo(
       total: mechanicsTotal,
       weighted: mechanicsWeighted,
       gateNote,
+      observedCount,
+      averageConfidence,
     } = scoreToGradeLevel(finalScores);
     const coach = COACHES[grade];
 
@@ -1174,6 +1282,20 @@ export async function analyzeSwingVideo(
           : "측면샷을 추가하면 플레인·임팩트 판정이 정확해져요",
       );
     }
+    const qualityWarnings = videoQuality.flatMap((q) => q.warnings);
+    const failedQuality = videoQuality.filter((q) => !q.passed);
+    if (failedQuality.length > 0) {
+      provisionalReasons.push(
+        `촬영 품질 재확인 필요 — ${failedQuality.map((q) => VIDEO_VIEW_LABEL[q.view]).join(", ")}`,
+      );
+    } else if (qualityWarnings.length > 0) {
+      provisionalReasons.push(qualityWarnings.slice(0, 2).join(" · "));
+    }
+    if (observedCount < MECHANICS_DIMENSIONS.length || averageConfidence < 0.65) {
+      provisionalReasons.push(
+        `판독 범위 ${observedCount}/8 · 평균 신뢰도 ${Math.round(averageConfidence * 100)}%`,
+      );
+    }
     const provisional = provisionalReasons.length > 0;
 
     return {
@@ -1189,6 +1311,12 @@ export async function analyzeSwingVideo(
       mechanicsScores: finalScores,
       mechanicsTotal,
       mechanicsWeighted,
+      mechanicsCoverage: {
+        observed: observedCount,
+        total: MECHANICS_DIMENSIONS.length,
+        averageConfidence,
+      },
+      videoQuality,
       calibrationNote,
       regionReports: regionReports.length > 0 ? regionReports : undefined,
       homeworkCheck: coachOutput.homeworkCheck ?? null,
@@ -1239,7 +1367,7 @@ function buildMediaParts(
     });
     if (vFrames.length > 0) {
       parts.push({
-        text: `정지 프레임 ${vFrames.length}장 (영상 10/30/50/70/90% 지점):`,
+        text: `위상 정지 프레임 ${vFrames.length}장 (임팩트 전후 연속 프레임 포함):`,
       });
       for (const f of vFrames) {
         parts.push({ text: `- ${f.label}` });
@@ -1275,6 +1403,7 @@ const SELF_CALIBRATION_PROMPT = `당신은 ${HEAD_COACH.name}입니다.
 - 점수를 올리는 것은 절대 금지. 낮추거나 유지만.
 - 최대 2개 항목까지만 조정 (한 번에 너무 많이 낮추지 말 것).
 - 기본기 항목(★)을 우선 의심.
+- observable=false인 항목은 점수를 만들거나 변경하지 말 것.
 - 조정 시 해당 항목 note에 "[보정] " 접두사 붙이고 사유 한 줄.
 
 [출력 JSON — 이 형식만, 코드펜스/설명 금지]
@@ -1282,14 +1411,14 @@ const SELF_CALIBRATION_PROMPT = `당신은 ${HEAD_COACH.name}입니다.
   "adjusted": boolean,
   "rationale": string,
   "mechanicsScores": [
-    { "dim": "address",    "score": 0|1|2|3, "note": string },
-    { "dim": "takeaway",   "score": 0|1|2|3, "note": string },
-    { "dim": "top",        "score": 0|1|2|3, "note": string },
-    { "dim": "transition", "score": 0|1|2|3, "note": string },
-    { "dim": "impact",     "score": 0|1|2|3, "note": string },
-    { "dim": "finish",     "score": 0|1|2|3, "note": string },
-    { "dim": "tempo",      "score": 0|1|2|3, "note": string },
-    { "dim": "balance",    "score": 0|1|2|3, "note": string }
+    { "dim": "address",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "takeaway",   "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "top",        "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "transition", "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "impact",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "finish",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "tempo",      "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
+    { "dim": "balance",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string }
   ]
 }`;
 
@@ -1339,6 +1468,7 @@ function applyCalibrationSafely(
   const byDim = new Map(calibrated.map((s) => [s.dim, s]));
   let changed = false;
   const merged = original.map((o) => {
+    if (o.observable === false) return o;
     const c = byDim.get(o.dim);
     if (!c) return o;
     if (c.score < o.score) {

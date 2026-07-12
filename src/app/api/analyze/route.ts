@@ -131,6 +131,8 @@ export async function POST(req: Request) {
           mechanicsScores: (prevRec.analysis.mechanicsScores ?? []).map((s) => ({
             dim: s.dim,
             score: s.score,
+            observable: s.observable,
+            confidence: s.confidence,
           })),
         };
       }
@@ -174,9 +176,14 @@ export async function POST(req: Request) {
     const dimensionDeltas = prevScores
       ? MECHANICS_DIMENSIONS.map((d) => ({
           dim: d,
-          prev: prevScores.find((s) => s.dim === d)?.score ?? null,
-          current:
-            analysis.mechanicsScores.find((s) => s.dim === d)?.score ?? null,
+          prev: (() => {
+            const score = prevScores.find((s) => s.dim === d);
+            return score && score.observable !== false ? score.score : null;
+          })(),
+          current: (() => {
+            const score = analysis.mechanicsScores.find((s) => s.dim === d);
+            return score && score.observable !== false ? score.score : null;
+          })(),
         }))
       : null;
 
