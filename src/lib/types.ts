@@ -54,6 +54,25 @@ export interface MechanicsScore {
   dim: MechanicsDim;
   score: 0 | 1 | 2 | 3;
   note: string;
+  /** 해당 시점/부위가 영상에서 실제로 판독 가능했는지. 과거 기록은 undefined=true로 취급 */
+  observable?: boolean;
+  /** 판독 신뢰도 0~1. 관찰 불가이면 0 */
+  confidence?: number;
+}
+
+export interface VideoQualityReport {
+  view: VideoView;
+  width: number;
+  height: number;
+  fps: number;
+  durationSec: number;
+  mainSwingFound: boolean;
+  framing: "full" | "partial" | "unknown";
+  clubVisible: boolean | null;
+  ballVisible: boolean | null;
+  stable: boolean | null;
+  warnings: string[];
+  passed: boolean;
 }
 
 export interface SwingPoint {
@@ -140,10 +159,14 @@ export interface SwingAnalysis {
   level: Level;
   gradeRationale: string;
   mechanicsScores: MechanicsScore[];
-  /** 8항목 0~3점 원본 합계 (0~24). UI에서 항목별 점수 합으로 표시 */
+  /** 관찰 가능 항목을 8항목 기준으로 환산한 점수 (0~24) */
   mechanicsTotal: number;
-  /** 기본기 가중치 1.5배 적용 합계 (0~30). 등급 판정에 사용 */
+  /** 관찰 가능 항목에 기본기 가중치 1.5배를 적용해 환산한 점수 (0~30) */
   mechanicsWeighted?: number;
+  /** 실제 판독에 사용된 항목 수와 평균 신뢰도 */
+  mechanicsCoverage?: { observed: number; total: number; averageConfidence: number };
+  /** 시점별 기술/시각 품질 사전 검사 */
+  videoQuality?: VideoQualityReport[];
   /** 자기보정 단계에서 점수 조정이 있었는지 + 사유 */
   calibrationNote?: string;
   /** 부위별 전문 분석관 3인의 관찰 보고서 */
@@ -184,14 +207,22 @@ const FUNDAMENTAL_DIMS: MechanicsDim[] = [
 ];
 
 /**
- * 가중 점수 계산: 기본기 4항목 × 1.5 + 화려한 4항목 × 1.0
+ * 가중 점수 계산: 관찰 가능 항목만 기본기 × 1.5, 나머지 × 1.0으로 계산한 뒤
+ * 전체 30점 기준으로 정규화한다.
  * 최댓값 = 4×3×1.5 + 4×3×1.0 = 18 + 12 = 30
  */
 export function weightedTotal(scores: MechanicsScore[]): number {
-  return scores.reduce((sum, s) => {
+  const observed = scores.filter((s) => s.observable !== false);
+  if (observed.length === 0) return 0;
+  const earned = observed.reduce((sum, s) => {
     const w = FUNDAMENTAL_DIMS.includes(s.dim) ? 1.5 : 1.0;
     return sum + s.score * w;
   }, 0);
+  const availableMax = observed.reduce(
+    (sum, s) => sum + 3 * (FUNDAMENTAL_DIMS.includes(s.dim) ? 1.5 : 1.0),
+    0,
+  );
+  return Math.round((earned / availableMax) * 30 * 10) / 10;
 }
 
 /**
@@ -217,18 +248,31 @@ export function scoreToGradeLevel(
   total: number;
   weighted: number;
   gateNote?: string;
+  observedCount: number;
+  averageConfidence: number;
 } {
-  const total = scores.reduce((s, m) => s + m.score, 0);
+  // 과거 데이터에는 observable이 없으므로 관찰 가능으로 취급한다.
+  const observed = scores.filter((s) => s.observable !== false);
+  const observedCount = observed.length;
+  const rawTotal = observed.reduce((s, m) => s + m.score, 0);
+  const total = observedCount > 0
+    ? Math.round((rawTotal / observedCount) * 8 * 10) / 10
+    : 0;
   const weighted = weightedTotal(scores);
+  const averageConfidence = observedCount > 0
+    ? Math.round(
+        (observed.reduce((sum, s) => sum + (s.confidence ?? 0.7), 0) / observedCount) * 100,
+      ) / 100
+    : 0;
 
   // 게이트 체크용 원본 점수 통계
-  const fundamentals = scores.filter((s) => FUNDAMENTAL_DIMS.includes(s.dim));
-  const fundOk = fundamentals.every((s) => s.score >= 2);
-  const fundAllThree = fundamentals.every((s) => s.score === 3);
+  const fundamentals = observed.filter((s) => FUNDAMENTAL_DIMS.includes(s.dim));
+  const fundOk = fundamentals.length === 4 && fundamentals.every((s) => s.score >= 2);
+  const fundAllThree = fundamentals.length === 4 && fundamentals.every((s) => s.score === 3);
   const fundAtLeast1Count = fundamentals.filter((s) => s.score >= 1).length;
-  const allDimsOk = scores.every((s) => s.score >= 2);
-  const numThrees = scores.filter((s) => s.score === 3).length;
-  const numAtLeast1 = scores.filter((s) => s.score >= 1).length;
+  const allDimsOk = observed.length === 8 && observed.every((s) => s.score >= 2);
+  const numThrees = observed.filter((s) => s.score === 3).length;
+  const numAtLeast1 = observed.filter((s) => s.score >= 1).length;
 
   // 1) 가중 점수로 기본 등급/단계 산출
   let grade: Grade;
@@ -269,7 +313,20 @@ export function scoreToGradeLevel(
       "아마추어 게이트 미달(기본기 3개↑가 ≥1점 + 8항목 중 ≥1점 4개↑ 필요). 골린이 LV-3로 조정.";
   }
 
-  return { grade, level, total, weighted, gateNote };
+  // 영상 정보가 부족할 때는 낮은 점수를 부여하지 않고 등급의 확정 범위만 제한한다.
+  if ((observedCount < 6 || fundamentals.length < 3) && grade !== "beginner") {
+    grade = "beginner";
+    level = 3;
+    gateNote =
+      `판독 범위 부족(${observedCount}/8, 기본기 ${fundamentals.length}/4). 점수 감점 없이 골린이 LV-3 잠정 상한 적용.`;
+  } else if ((observedCount < 8 || fundamentals.length < 4) && (grade === "pro" || grade === "semipro")) {
+    grade = "amateur";
+    level = 3;
+    gateNote =
+      `상위 등급 확정에 필요한 판독 범위 부족(${observedCount}/8). 점수 감점 없이 아마추어 LV-3 잠정 상한 적용.`;
+  }
+
+  return { grade, level, total, weighted, gateNote, observedCount, averageConfidence };
 }
 
 /**
