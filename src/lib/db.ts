@@ -158,6 +158,23 @@ export function previousForClub(
   return row ? rowToRecord(row) : null;
 }
 
+/** 같은 클럽의 최근 N개 전체 기록 (숙제 누적 추적용, 최신순) */
+export function recentRecordsForClub(
+  userId: string,
+  clubType: ClubType,
+  limit = 3,
+): AnalysisRecord[] {
+  const db = getDb();
+  const rows = db
+    .prepare(
+      `SELECT * FROM analyses
+       WHERE user_id = ? AND club_type = ?
+       ORDER BY created_at DESC LIMIT ?`,
+    )
+    .all(userId, clubType, limit) as Row[];
+  return rows.map(rowToRecord);
+}
+
 /**
  * 새 분석을 저장하기 직전, 같은 클럽의 가장 최근 기록을 요약해서
  * Gemini에게 컨텍스트로 넣어주기 위한 함수.

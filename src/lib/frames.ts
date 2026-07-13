@@ -116,6 +116,125 @@ export function technicalQualityReport(
   };
 }
 
+/** ffmpeg 모션 분석 결과: 프레임 간 휘도 차이(YDIF) 기반 스윙 구간 추정 */
+export interface MotionAnalysis {
+  /** 움직임 최대 지점 ≈ 임팩트 후보 (초) */
+  impactCandidateSec: number;
+  /** 임팩트 직전 마지막 정지 구간 종료 ≈ 어드레스 후보 (초) */
+  swingStartSec: number;
+  /** 피크 이후 움직임이 잦아드는 지점 ≈ 피니시 부근 (초) */
+  swingEndSec: number;
+}
+
+/**
+ * LLM 없이 결정적(deterministic)으로 스윙 구간을 추정한다.
+ * ffmpeg signalstats의 YDIF(프레임 간 평균 휘도 차이)를 프레임별로 뽑아
+ * 최대 움직임 지점(≈임팩트)과 그 앞의 정지 구간(≈어드레스)을 찾는다.
+ * 같은 영상은 항상 같은 결과 → 위상 감지 실패 시 고정 비율보다 나은 폴백,
+ * 그리고 Gemini 위상 감지의 사전 힌트로 사용.
+ */
+export async function analyzeMotion(
+  videoPath: string,
+): Promise<MotionAnalysis | null> {
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const proc = spawn(ensureBinary(), [
+      "-hide_banner",
+      "-i", videoPath,
+      "-vf", "scale=160:-2,signalstats,metadata=print:file=-",
+      "-f", "null",
+      "-",
+    ]);
+    let out = "";
+    proc.stdout.on("data", (chunk) => {
+      // 30초 60fps 상한에서도 수 MB 수준이지만 폭주 방지 캡
+      if (out.length < 16 * 1024 * 1024) out += chunk.toString();
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) resolve(out);
+      else reject(new Error(`ffmpeg motion analysis exit ${code}`));
+    });
+  });
+
+  // "frame:N pts:... pts_time:T" 라인과 "lavfi.signalstats.YDIF=x" 라인 페어 파싱
+  const samples: { t: number; ydif: number }[] = [];
+  let currentT: number | null = null;
+  for (const line of stdout.split("\n")) {
+    const tMatch = line.match(/pts_time:([\d.]+)/);
+    if (tMatch) {
+      currentT = parseFloat(tMatch[1]);
+      continue;
+    }
+    const yMatch = line.match(/lavfi\.signalstats\.YDIF=([\d.]+)/);
+    if (yMatch && currentT !== null) {
+      samples.push({ t: currentT, ydif: parseFloat(yMatch[1]) });
+      currentT = null;
+    }
+  }
+  if (samples.length < 10) return null;
+
+  // 3-포인트 이동평균으로 노이즈 완화
+  const smoothed = samples.map((s, i) => {
+    const a = samples[Math.max(0, i - 1)].ydif;
+    const b = s.ydif;
+    const c = samples[Math.min(samples.length - 1, i + 1)].ydif;
+    return { t: s.t, v: (a + b + c) / 3 };
+  });
+
+  // 피크(최대 움직임) = 임팩트 후보. 첫 프레임(장면 전환 노이즈)은 제외.
+  let peakIdx = 1;
+  for (let i = 2; i < smoothed.length; i++) {
+    if (smoothed[i].v > smoothed[peakIdx].v) peakIdx = i;
+  }
+  const peak = smoothed[peakIdx];
+  if (peak.v <= 0) return null;
+
+  // 정지 임계값: 피크의 12% (경험적). 어드레스는 이 이하의 지속 구간.
+  const quiet = peak.v * 0.12;
+
+  // 피크에서 뒤로 걸어가며 마지막 정지 구간의 끝을 찾는다 (≈ 어드레스 종료 = 스윙 시작)
+  let startIdx = 0;
+  for (let i = peakIdx; i >= 0; i--) {
+    if (smoothed[i].v < quiet) {
+      startIdx = i;
+      break;
+    }
+  }
+
+  // 피크에서 앞으로 걸어가며 움직임이 잦아드는 지점 (≈ 피니시)
+  let endIdx = smoothed.length - 1;
+  for (let i = peakIdx; i < smoothed.length; i++) {
+    if (smoothed[i].v < quiet) {
+      endIdx = i;
+      break;
+    }
+  }
+
+  return {
+    impactCandidateSec: Math.round(peak.t * 1000) / 1000,
+    swingStartSec: Math.round(smoothed[startIdx].t * 1000) / 1000,
+    swingEndSec: Math.round(smoothed[endIdx].t * 1000) / 1000,
+  };
+}
+
+/**
+ * 모션 분석 결과 → 위상 타임스탬프 폴백 생성.
+ * 고정 비율(10~90%)보다 훨씬 나은 근사. 템포 3:1 가정으로 탑 위치 추정.
+ */
+export function motionToTimestamps(motion: MotionAnalysis): PhaseTimestamps {
+  const { swingStartSec: start, impactCandidateSec: impact, swingEndSec: end } = motion;
+  const span = Math.max(0.2, impact - start);
+  // 백스윙:다운스윙 ≈ 3:1 → 탑은 스윙 구간의 약 75% 지점
+  const top = start + span * 0.75;
+  return {
+    address: start,
+    "mid-backswing": start + (top - start) * 0.5,
+    top,
+    impact,
+    finish: Math.min(end, impact + 1.0),
+  };
+}
+
 async function extractSingleFrame(
   inputPath: string,
   timestampSec: number,
@@ -191,10 +310,11 @@ export async function extractKeyFrames(
         frameOffset: 0,
       });
 
-      // 임팩트는 단일 프레임 대신 전후 3프레임을 추가해 손-헤드 관계와
+      // 임팩트는 단일 프레임 대신 전후 2프레임을 추가해 손-헤드 관계와
       // 자세 변화가 타임스탬프 오차에 좌우되지 않도록 한다.
+      // (±3 → ±2 축소: 인접 프레임은 거의 동일 이미지라 한계효용 낮고 토큰 비용만 큼)
       if (phase === "impact") {
-        for (const offset of [-3, -2, -1, 1, 2, 3]) {
+        for (const offset of [-2, -1, 1, 2]) {
           const burstTs = clamp(ts + offset / fps);
           const burstOut = path.join(tmpDir, `f${i}-impact-${offset}.jpg`);
           await extractSingleFrame(videoPath, burstTs, burstOut);

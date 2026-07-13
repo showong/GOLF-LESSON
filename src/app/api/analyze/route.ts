@@ -6,6 +6,7 @@ import {
   computeDelta,
   getOrCreateUser,
   previousForClub,
+  recentRecordsForClub,
   recentSummaryForClub,
   saveAnalysis,
 } from "@/lib/db";
@@ -15,6 +16,7 @@ import {
   type PreviousAnalysisContext,
 } from "@/lib/gemini";
 import { findRecommendations } from "@/lib/youtube";
+import { validatePoseTrack } from "@/lib/pose";
 import { getCoach, HEAD_COACH } from "@/lib/coaches";
 import {
   CLUB_LABEL,
@@ -119,29 +121,69 @@ export async function POST(req: Request) {
       recentSummaryForClub(user.id, c, 2).map((h) => ({ ...h, clubType: c })),
     );
 
-    // 숙제 검사용: 클럽별 직전 분석의 topFocus + 항목 점수.
+    // 숙제 검사용: 클럽별 최근 3회 분석 (누적 추적 + 반복 지적 감지).
     // 아직 클럽을 모르므로 세 클럽 모두 조회하고 판정 후 해당 클럽 것만 사용됨.
     const previousByClub: Partial<Record<ClubType, PreviousAnalysisContext>> = {};
     for (const c of ["driver", "iron", "approach"] as ClubType[]) {
-      const prevRec = previousForClub(user.id, c);
-      if (prevRec?.analysis?.topFocus?.title) {
-        previousByClub[c] = {
-          createdAt: prevRec.createdAt,
-          topFocusTitle: prevRec.analysis.topFocus.title,
-          mechanicsScores: (prevRec.analysis.mechanicsScores ?? []).map((s) => ({
-            dim: s.dim,
-            score: s.score,
-            observable: s.observable,
-            confidence: s.confidence,
+      const recent = recentRecordsForClub(user.id, c, 3);
+      const latest = recent[0];
+      if (!latest?.analysis?.topFocus?.title) continue;
+
+      // 반복 지적 감지: 최근 3회 모두에서 같은 항목이 "관찰 가능한 최저점"이면 해당 dim.
+      const lowestDimOf = (rec: (typeof recent)[number]) => {
+        const observed = (rec.analysis.mechanicsScores ?? []).filter(
+          (s) => s.observable !== false,
+        );
+        if (observed.length === 0) return null;
+        return observed.reduce((min, s) => (s.score < min.score ? s : min)).dim;
+      };
+      const lowestDims = recent.map(lowestDimOf);
+      const recurringWeakDim =
+        recent.length >= 3 &&
+        lowestDims[0] !== null &&
+        lowestDims.every((d) => d === lowestDims[0])
+          ? lowestDims[0]
+          : null;
+
+      previousByClub[c] = {
+        createdAt: latest.createdAt,
+        topFocusTitle: latest.analysis.topFocus.title,
+        mechanicsScores: (latest.analysis.mechanicsScores ?? []).map((s) => ({
+          dim: s.dim,
+          score: s.score,
+          observable: s.observable,
+          confidence: s.confidence,
+        })),
+        focusHistory: recent
+          .filter((r) => r.analysis?.topFocus?.title)
+          .map((r) => ({
+            createdAt: r.createdAt,
+            title: r.analysis.topFocus.title,
           })),
-        };
-      }
+        recurringWeakDim,
+      };
     }
+
+    // 브라우저 스켈레톤(관절 좌표) — 있으면 위상 감지·정량 지표에 사용, 없으면 서버 폴백
+    const MAX_POSE_BYTES = 3 * 1024 * 1024;
+    const poseFor = (view: VideoView) => {
+      const raw = form.get(view === "side" ? "poseSide" : "poseFront");
+      if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_POSE_BYTES) {
+        return undefined;
+      }
+      try {
+        const track = validatePoseTrack(JSON.parse(raw));
+        return track && track.view === view ? track : undefined;
+      } catch {
+        return undefined;
+      }
+    };
 
     const videos: AnalyzeVideo[] = saved.map((s) => ({
       view: s.view,
       filePath: s.tmpPath,
       mimeType: s.mimeType,
+      pose: poseFor(s.view),
     }));
 
     const analysis = await analyzeSwingVideo({
@@ -171,7 +213,11 @@ export async function POST(req: Request) {
     const coach = getCoach(analysis.grade);
 
     // 성장 게이지: 다음 단계까지 남은 가중 점수 + 항목별 변화(이전 분석 대비)
-    const target = nextLevelTarget(analysis.mechanicsWeighted ?? 0);
+    // 커버리지 캡이 걸리면 정규화 가중점수와 캡 등급이 모순되므로 게이지를 끈다.
+    const coverageCapped = analysis.mechanicsCoverage?.capped === true;
+    const target = coverageCapped
+      ? { nextAt: null, toNext: null, nextLabel: null }
+      : nextLevelTarget(analysis.mechanicsWeighted ?? 0);
     const prevScores = prev?.analysis?.mechanicsScores;
     const dimensionDeltas = prevScores
       ? MECHANICS_DIMENSIONS.map((d) => ({
@@ -194,11 +240,12 @@ export async function POST(req: Request) {
       coach,
       headCoach: HEAD_COACH,
       progress: {
-        weighted: analysis.mechanicsWeighted ?? null,
+        weighted: coverageCapped ? null : (analysis.mechanicsWeighted ?? null),
         nextAt: target.nextAt,
         toNext: target.toNext,
         nextLabel: target.nextLabel,
         dimensionDeltas,
+        coverageCapped,
       },
       labels: {
         club: CLUB_LABEL[analysis.clubType],

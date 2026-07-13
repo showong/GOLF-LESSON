@@ -22,6 +22,8 @@ interface ProgressInfo {
   dimensionDeltas:
     | { dim: MechanicsDim; prev: number | null; current: number | null }[]
     | null;
+  /** 판독 범위 부족으로 게이지를 신뢰할 수 없는 상태 */
+  coverageCapped?: boolean;
 }
 
 interface Props {
@@ -213,6 +215,13 @@ export default function AnalysisResult({ data }: Props) {
         {a.provisional && a.provisionalReason && (
           <p className="mt-2 rounded bg-amber-500/20 px-2 py-1 text-[11px] leading-relaxed text-amber-100">
             <strong>잠정 등급인 이유.</strong> {a.provisionalReason}
+          </p>
+        )}
+        {a.views && a.views.length === 1 && (
+          <p className="mt-2 rounded bg-fairway-700/50 px-2 py-1 text-[11px] leading-relaxed text-fairway-100/90">
+            {a.views[0] === "side"
+              ? "💡 정면샷을 함께 올리면 스웨이·정렬·체중 이동처럼 측면에서 안 보이는 항목까지 판독할 수 있어요."
+              : "💡 측면샷을 함께 올리면 스윙 플레인·척추각·임팩트처럼 정면에서 안 보이는 항목까지 판독할 수 있어요."}
           </p>
         )}
         {a.videoQuality && a.videoQuality.length > 0 && (
@@ -445,11 +454,14 @@ function MechanicsBreakdown({
   const deltaByDim = new Map(
     (progress?.dimensionDeltas ?? []).map((d) => [d.dim, d]),
   );
+  // 판독 범위 부족(coverage cap) 시: 정규화 가중점수가 캡 등급과 모순되므로
+  // 점수·게이지 대신 판독 확대 안내를 보여준다.
+  const capped = progress?.coverageCapped === true;
   // 신버전: weighted가 있으면 가중 점수(0~30)를 진행바 기준으로 사용
-  const hasWeighted = typeof weighted === "number";
+  const hasWeighted = typeof weighted === "number" && !capped;
   const display = hasWeighted ? Math.round(weighted! * 10) / 10 : total;
   const max = hasWeighted ? 30 : 24;
-  const pct = Math.round((display / max) * 100);
+  const pct = capped ? 0 : Math.round((display / max) * 100);
   const observedCount = scores.filter((s) => s.observable !== false).length;
   const averageConfidence = observedCount > 0
     ? Math.round(
@@ -467,7 +479,12 @@ function MechanicsBreakdown({
             매커니즘 채점 (헤드코치)
           </h3>
           <p className="text-xs text-fairway-700/70">
-            {hasWeighted ? (
+            {capped ? (
+              <>
+                판독된 항목이 부족해 점수·게이지 대신 <strong>등급 상한만 안내</strong>합니다.
+                전신과 클럽 헤드가 모두 보이게 다시 촬영하면 정확한 점수를 드릴 수 있어요.
+              </>
+            ) : hasWeighted ? (
               <>
                 기본기 ★ × 1.5 가중 = <strong>{display} / 30점</strong> ({pct}%)
                 — 관찰 가능 항목을 기준으로 환산했습니다. 비가중 환산 {total} / 24점.
@@ -484,16 +501,18 @@ function MechanicsBreakdown({
           </p>
         </div>
         <div className="shrink-0 rounded-lg bg-fairway-900 px-3 py-1.5 text-sm font-bold text-white">
-          {display} / {max}
+          {capped ? `판독 ${observedCount}/8` : `${display} / ${max}`}
         </div>
       </div>
 
-      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-fairway-100">
-        <div
-          className="h-full bg-gradient-to-r from-rose-400 via-amber-400 to-emerald-500"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      {!capped && (
+        <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-fairway-100">
+          <div
+            className="h-full bg-gradient-to-r from-rose-400 via-amber-400 to-emerald-500"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
 
       {progress && progress.toNext !== null && progress.nextLabel && (
         <div className="mt-3 rounded-lg border border-fairway-100 bg-fairway-50 px-3 py-2">

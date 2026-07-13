@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { extractPoseTrack } from "@/lib/pose-client";
+import type { PoseTrack } from "@/lib/pose";
 
 interface Props {
   nickname: string;
@@ -8,6 +10,7 @@ interface Props {
 }
 
 type ClubHint = "" | "driver" | "iron" | "approach";
+type PoseStatus = "idle" | "extracting" | "ready" | "unavailable";
 
 export default function VideoUpload({ nickname, onResult }: Props) {
   const sideRef = useRef<HTMLInputElement>(null);
@@ -17,6 +20,35 @@ export default function VideoUpload({ nickname, onResult }: Props) {
   const [clubHint, setClubHint] = useState<ClubHint>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 브라우저 스켈레톤(관절) 추출 — 파일 선택 즉시 백그라운드로 진행.
+  // 실패해도 분석은 서버 폴백으로 정상 동작하므로 제출을 막지 않는다.
+  const poseRef = useRef<{ side: PoseTrack | null; front: PoseTrack | null }>({
+    side: null,
+    front: null,
+  });
+  const [poseStatus, setPoseStatus] = useState<{
+    side: PoseStatus;
+    front: PoseStatus;
+  }>({ side: "idle", front: "idle" });
+
+  function startPoseExtraction(view: "side" | "front", file: File | null) {
+    poseRef.current[view] = null;
+    if (!file) {
+      setPoseStatus((s) => ({ ...s, [view]: "idle" }));
+      return;
+    }
+    setPoseStatus((s) => ({ ...s, [view]: "extracting" }));
+    extractPoseTrack(file, view)
+      .then((track) => {
+        // 추출 도중 파일이 바뀌었으면 무시
+        poseRef.current[view] = track;
+        setPoseStatus((s) => ({ ...s, [view]: track ? "ready" : "unavailable" }));
+      })
+      .catch(() => {
+        setPoseStatus((s) => ({ ...s, [view]: "unavailable" }));
+      });
+  }
 
   async function submit() {
     if (!nickname.trim()) {
@@ -35,6 +67,13 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       if (sideFile) fd.append("videoSide", sideFile);
       if (frontFile) fd.append("videoFront", frontFile);
       if (clubHint) fd.append("clubHint", clubHint);
+      // 브라우저에서 추출된 관절 좌표(있을 때만) — 서버 위상 감지·정량 지표에 사용
+      if (sideFile && poseRef.current.side) {
+        fd.append("poseSide", JSON.stringify(poseRef.current.side));
+      }
+      if (frontFile && poseRef.current.front) {
+        fd.append("poseFront", JSON.stringify(poseRef.current.front));
+      }
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "분석 실패");
@@ -67,7 +106,10 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         <FileSlot
           inputRef={sideRef}
           file={sideFile}
-          onChange={setSideFile}
+          onChange={(f) => {
+            setSideFile(f);
+            startPoseExtraction("side", f);
+          }}
           title="측면샷"
           recommended
           hint="플레인·자세각·임팩트 분석에 가장 유리"
@@ -76,7 +118,10 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         <FileSlot
           inputRef={frontRef}
           file={frontFile}
-          onChange={setFrontFile}
+          onChange={(f) => {
+            setFrontFile(f);
+            startPoseExtraction("front", f);
+          }}
           title="정면샷"
           recommended={false}
           hint="정렬·머리 움직임·스웨이 분석에 유리"
@@ -133,10 +178,16 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       {hasFile && (
         <div className="mt-3 flex flex-col gap-1 text-xs text-fairway-700/80">
           {sideFile && (
-            <span>· 측면샷: {sideFile.name} ({sizeMB(sideFile)}MB)</span>
+            <span>
+              · 측면샷: {sideFile.name} ({sizeMB(sideFile)}MB){" "}
+              <PoseBadge status={poseStatus.side} />
+            </span>
           )}
           {frontFile && (
-            <span>· 정면샷: {frontFile.name} ({sizeMB(frontFile)}MB)</span>
+            <span>
+              · 정면샷: {frontFile.name} ({sizeMB(frontFile)}MB){" "}
+              <PoseBadge status={poseStatus.front} />
+            </span>
           )}
         </div>
       )}
@@ -316,5 +367,23 @@ function FileSlot({
         </button>
       </div>
     </div>
+  );
+}
+
+function PoseBadge({ status }: { status: PoseStatus }) {
+  if (status === "idle") return null;
+  const map: Record<Exclude<PoseStatus, "idle">, { label: string; cls: string }> = {
+    extracting: { label: "동작 분석 중…", cls: "bg-sky-100 text-sky-800" },
+    ready: { label: "스켈레톤 분석 준비됨 ✓", cls: "bg-emerald-100 text-emerald-800" },
+    unavailable: {
+      label: "스켈레톤 미지원 (서버 분석으로 진행)",
+      cls: "bg-slate-100 text-slate-600",
+    },
+  };
+  const m = map[status as Exclude<PoseStatus, "idle">];
+  return (
+    <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${m.cls}`}>
+      {m.label}
+    </span>
   );
 }

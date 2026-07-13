@@ -58,6 +58,8 @@ export interface MechanicsScore {
   observable?: boolean;
   /** 판독 신뢰도 0~1. 관찰 불가이면 0 */
   confidence?: number;
+  /** note가 인용한 관찰 출처: 부위별 분석관(lower/upper/axis) 또는 직접 관찰(direct) */
+  evidenceSource?: "lower" | "upper" | "axis" | "direct" | null;
 }
 
 export interface VideoQualityReport {
@@ -81,6 +83,8 @@ export interface SwingPoint {
   emphasis?: "key" | "normal";
   /** 이 진단의 관찰 근거 (프레임/위상/부위 인용). 약점 항목은 필수 */
   evidence?: string;
+  /** 드릴 전용: 감별 트리의 서브타입명 (예: "시퀀스형"). 감별 불필요 시 "일반" */
+  targetSubtype?: string;
 }
 
 export interface SwingFocus {
@@ -163,8 +167,13 @@ export interface SwingAnalysis {
   mechanicsTotal: number;
   /** 관찰 가능 항목에 기본기 가중치 1.5배를 적용해 환산한 점수 (0~30) */
   mechanicsWeighted?: number;
-  /** 실제 판독에 사용된 항목 수와 평균 신뢰도 */
-  mechanicsCoverage?: { observed: number; total: number; averageConfidence: number };
+  /** 실제 판독에 사용된 항목 수와 평균 신뢰도. capped=판독 부족으로 등급 상한 제한됨 */
+  mechanicsCoverage?: {
+    observed: number;
+    total: number;
+    averageConfidence: number;
+    capped?: boolean;
+  };
   /** 시점별 기술/시각 품질 사전 검사 */
   videoQuality?: VideoQualityReport[];
   /** 자기보정 단계에서 점수 조정이 있었는지 + 사유 */
@@ -250,6 +259,8 @@ export function scoreToGradeLevel(
   gateNote?: string;
   observedCount: number;
   averageConfidence: number;
+  /** 판독 범위 부족으로 등급 상한이 제한됐는지 (점수 문제가 아님) */
+  coverageCapped: boolean;
 } {
   // 과거 데이터에는 observable이 없으므로 관찰 가능으로 취급한다.
   const observed = scores.filter((s) => s.observable !== false);
@@ -292,41 +303,62 @@ export function scoreToGradeLevel(
     level = (w <= 27 ? 1 : w <= 29 ? 2 : 3) as Level;
   }
 
-  // 2) 강한 하드 게이트
+  // 2) 커버리지 캡 — 점수 게이트보다 먼저 검사한다.
+  //    "안 보인 것"과 "못 하는 것"을 구분하기 위해, 판독 범위가 부족하면
+  //    점수 기반 게이트를 평가하지 않고 상한만 제한한다 (감점 아님).
   let gateNote: string | undefined;
-  if (grade === "pro" && (!allDimsOk || numThrees < 4 || !fundAllThree)) {
-    grade = "semipro";
-    level = 3;
-    gateNote =
-      "프로 게이트 미달(8항목 ≥2 + 3점 4개↑ + 기본기 모두 3점 필요). 세미프로 LV-3로 조정.";
-  }
-  if ((grade === "pro" || grade === "semipro") && !fundOk) {
+  let coverageCapped = false;
+
+  if (observedCount < 6 || fundamentals.length < 3) {
+    coverageCapped = true;
+    if (grade !== "beginner") {
+      grade = "beginner";
+      level = 3;
+    }
+    gateNote = `판독 범위 부족(${observedCount}/8, 기본기 ${fundamentals.length}/4). 점수 감점 없이 골린이 LV-3 잠정 상한 적용.`;
+  } else if (
+    (observedCount < 8 || fundamentals.length < 4) &&
+    (grade === "pro" || grade === "semipro")
+  ) {
+    coverageCapped = true;
     grade = "amateur";
     level = 3;
-    gateNote =
-      "기본기 게이트 미달(★ 4항목 모두 ≥2점 필요). 아마추어 LV-3로 조정.";
-  }
-  if (grade === "amateur" && (numAtLeast1 < 4 || fundAtLeast1Count < 3)) {
-    grade = "beginner";
-    level = 3;
-    gateNote =
-      "아마추어 게이트 미달(기본기 3개↑가 ≥1점 + 8항목 중 ≥1점 4개↑ 필요). 골린이 LV-3로 조정.";
+    gateNote = `상위 등급 확정에 필요한 판독 범위 부족(${observedCount}/8). 점수 감점 없이 아마추어 LV-3 잠정 상한 적용.`;
   }
 
-  // 영상 정보가 부족할 때는 낮은 점수를 부여하지 않고 등급의 확정 범위만 제한한다.
-  if ((observedCount < 6 || fundamentals.length < 3) && grade !== "beginner") {
-    grade = "beginner";
-    level = 3;
-    gateNote =
-      `판독 범위 부족(${observedCount}/8, 기본기 ${fundamentals.length}/4). 점수 감점 없이 골린이 LV-3 잠정 상한 적용.`;
-  } else if ((observedCount < 8 || fundamentals.length < 4) && (grade === "pro" || grade === "semipro")) {
-    grade = "amateur";
-    level = 3;
-    gateNote =
-      `상위 등급 확정에 필요한 판독 범위 부족(${observedCount}/8). 점수 감점 없이 아마추어 LV-3 잠정 상한 적용.`;
+  // 3) 점수 기반 하드 게이트 — 판독 범위가 충분할 때만 평가.
+  //    커버리지 캡이 걸린 경우 "기본기 미달" 같은 실력 지적 메시지를 내면 안 된다.
+  if (!coverageCapped) {
+    if (grade === "pro" && (!allDimsOk || numThrees < 4 || !fundAllThree)) {
+      grade = "semipro";
+      level = 3;
+      gateNote =
+        "프로 게이트 미달(8항목 ≥2 + 3점 4개↑ + 기본기 모두 3점 필요). 세미프로 LV-3로 조정.";
+    }
+    if ((grade === "pro" || grade === "semipro") && !fundOk) {
+      grade = "amateur";
+      level = 3;
+      gateNote =
+        "기본기 게이트 미달(★ 4항목 모두 ≥2점 필요). 아마추어 LV-3로 조정.";
+    }
+    if (grade === "amateur" && (numAtLeast1 < 4 || fundAtLeast1Count < 3)) {
+      grade = "beginner";
+      level = 3;
+      gateNote =
+        "아마추어 게이트 미달(기본기 3개↑가 ≥1점 + 8항목 중 ≥1점 4개↑ 필요). 골린이 LV-3로 조정.";
+    }
   }
 
-  return { grade, level, total, weighted, gateNote, observedCount, averageConfidence };
+  return {
+    grade,
+    level,
+    total,
+    weighted,
+    gateNote,
+    observedCount,
+    averageConfidence,
+    coverageCapped,
+  };
 }
 
 /**

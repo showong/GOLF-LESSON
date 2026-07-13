@@ -8,10 +8,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "db:init": "tsx src/lib/db-init.ts"
+    "db:init": "tsx src/lib/db-init.ts",
+    "test:grading": "tsx scripts/test-grading.ts",
+    "test:pose": "tsx scripts/test-pose.ts",
+    "test": "npm run test:grading && npm run test:pose"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
+    "@mediapipe/tasks-vision": "^0.10.35",
     "better-sqlite3": "^11.3.0",
     "ffmpeg-static": "^5.2.0",
     "next": "14.2.15",

@@ -8,12 +8,21 @@ import fs from "node:fs";
 import path from "node:path";
 import { COACHES, HEAD_COACH, type CoachPersona } from "./coaches";
 import {
+  analyzeMotion,
   extractKeyFrames,
   inspectVideoMetadata,
+  motionToTimestamps,
   technicalQualityReport,
   type ExtractedFrame,
   type PhaseTimestamps,
 } from "./frames";
+import {
+  computePoseMetrics,
+  detectPhasesFromPose,
+  renderPoseMetrics,
+  type PoseMetrics,
+  type PoseTrack,
+} from "./pose";
 import {
   BODY_REGION_LABEL,
   CLUB_LABEL,
@@ -294,14 +303,21 @@ const HEAD_JUDGE_PROMPT = `당신은 ${HEAD_COACH.name}입니다. ${HEAD_COACH.v
 추출되었을 수 있습니다(라벨에 "위상 감지" 표기). 프레임 라벨에
 "측면샷" / "정면샷"이 명시되어 있습니다.
 
-[부위별 분석관 보고서 — 제공될 경우 채점의 1차 근거로 사용]
+[부위별 분석관 보고서 — 채점의 1차 근거. 인용은 필수 규칙]
 하체(발·무릎·골반) / 상체(어깨·팔·손목) / 축(머리·척추각) 3인의 전문 분석관이
 같은 프레임을 먼저 관찰한 보고서가 텍스트로 함께 제공될 수 있습니다.
-- mechanicsScores의 각 note는 가능한 한 분석관 보고서의 구체적 관찰
-  (또는 직접 확인한 프레임 근거)을 인용해야 합니다.
+- mechanicsScores의 각 note는 **반드시** 분석관 보고서의 구체적 관찰
+  또는 직접 확인한 프레임 근거를 인용합니다. 인용 없는 채점은 무효.
+- 각 항목에 evidenceSource 필드 필수:
+  · "lower" | "upper" | "axis" — 해당 분석관 보고서를 인용한 경우
+  · "direct" — 영상/프레임을 직접 관찰한 근거인 경우
+  · 관찰 불가(observable=false) 항목은 null
 - 근거 없는 인상 평가("전반적으로 불안정") 금지. 무엇이 어느 위상에서
   어떻게 보였는지 적으세요.
-- 분석관 보고와 영상이 충돌하면 직접 관찰을 우선하되 note에 그 사실을 남기세요.
+- 분석관 보고와 영상이 충돌하면 직접 관찰을 우선하되 note에 그 사실을 남기고
+  evidenceSource="direct"로 표기하세요.
+- 서버 규칙: 관찰 가능 항목에 evidenceSource가 없으면 해당 항목 신뢰도가
+  자동으로 하향 조정됩니다.
 
 [시점별 강점 — 분석에 적극 활용]
 - **측면샷(side)**: 스윙 플레인, 척추 각, 클럽 길이, 어택 앵글, 탑 포지션, 임팩트 자세,
@@ -438,14 +454,14 @@ ${RUBRIC}
   "clubConfidence": number,
   "clubCues": [string, ...],
   "mechanicsScores": [
-    { "dim": "address",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "takeaway",   "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "top",        "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "transition", "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "impact",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "finish",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "tempo",      "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "balance",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string }
+    { "dim": "address",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "takeaway",   "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "top",        "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "transition", "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "impact",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "finish",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "tempo",      "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "balance",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string }
   ],
   "gradeRationale": string
 }`;
@@ -471,6 +487,52 @@ const DIFFERENTIAL_TREE = `[감별 진단 — 흔한 결함은 반드시 서브�
 
 weaknesses의 해당 항목 title에 서브타입을 자연스럽게 녹여 쓰고(예: "팔이 먼저
 내려오는 전환 타이밍"), detail에 감별 근거를 담으세요.`;
+
+/**
+ * 서브타입 → 집/회사 드릴 템플릿 라이브러리.
+ * 코치는 이 템플릿에서 골라 사용자 상황(등급 어휘·강도)에 맞게 다듬는다.
+ * 템플릿 밖 드릴을 창작할 수는 있으나 서브타입 정합성은 리뷰에서 채점된다.
+ */
+const DRILL_LIBRARY = `[서브타입별 드릴 템플릿 — 여기서 골라 등급 어휘로 다듬어 처방]
+
+▶ 회전 제한형 (골반 회전 부족)
+  - 의자 등받이 골반 터치 드릴: 의자를 등 뒤 한 뼘에 두고 백스윙 때 오른쪽 골반으로 등받이를 살짝 터치. 10회×2세트. 체크: 터치가 되는가
+  - 벽 보고 앉았다 돌기: 벽을 정면에 두고 서서 골반만 좌우로 45도 회전. 15회. 체크: 어깨보다 골반이 먼저 도는 느낌
+  - 수건 골반 스트레칭: 앉아서 수건을 무릎에 걸고 상체 고정 후 골반 좌우 비틀기. 좌우 각 20초×3회
+
+▶ 시퀀스형 (팔이 먼저 내려옴)
+  - "아래부터" 멈춤 드릴: 빈손 백스윙 탑에서 1초 멈춘 뒤 왼발→골반→팔 순서로 소리 내며("발-허리-팔") 내리기. 10회×2세트. 체크: 팔이 마지막인가
+  - 수건 던지기 드릴: 수건 끝을 잡고 스윙, 탑에서 하체 먼저 돌아야 수건이 늦게 따라옴. 15회. 체크: 수건이 몸에 감기며 따라오는가
+  - 벽 등지고 힙 범프: 벽에 등 대고 서서 다운스윙 시작 동작으로 왼쪽 골반만 벽에서 떼기. 15회
+
+▶ 셋업 긴장형 (그립·팔 과긴장)
+  - 그립 압력 5→2 드릴: 클럽 대신 우산을 꽉(5) 쥐었다가 숫자를 세며 2까지 풀기. 어드레스마다 반복 10회. 체크: 팔뚝 힘줄이 안 서는가
+  - 어깨 털기 루틴: 거울 앞 어드레스 → 어깨 으쓱 3회 후 툭 떨어뜨리고 시작. 10회
+  - 한 손 왜글: 오른손만으로 우산을 가볍게 왜글 20회. 체크: 손목이 부드럽게 움직이는가
+
+▶ 얼리 익스텐션형 (임팩트 전 상체 기립)
+  - 벽 엉덩이 드릴: 벽에 엉덩이 대고 어드레스 → 빈손 스윙 내내 엉덩이가 벽에서 안 떨어지게. 10회×2세트. 체크: 임팩트 구간에서 벽 접촉 유지
+  - 의자 머리 높이 드릴: 어드레스 때 머리 앞 한 뼘에 스마트폰 거치대를 두고 스윙 중 머리가 위로 안 뜨는지 영상 확인. 5회
+
+▶ 시선 추적형 (시선이 먼저 목표로)
+  - 동전 응시 드릴: 공 위치에 동전을 두고 빈손 스윙 후에도 1초간 동전 응시. 15회. 체크: 임팩트 후에도 동전이 보이는가
+  - "치고 하나" 카운트: 스윙 후 속으로 "하나"를 센 뒤 고개 들기. 10회
+
+▶ 백스윙 스웨이형 (골반 우측 밀림)
+  - 오른발 안쪽 책 드릴: 오른발 바깥에 책을 세워두고 백스윙 때 책이 안 넘어지게. 10회×2세트. 체크: 체중이 오른발 안쪽에 실리는가
+  - 오른 무릎 고정 응시: 거울 옆에 두고 백스윙 중 오른 무릎 각도가 유지되는지 확인. 10회
+
+▶ 체중 이동 부족형 (좌측으로 못 넘어감)
+  - 스텝 스윙 드릴: 두 발 모으고 어드레스 → 백스윙하며 왼발을 목표 쪽으로 내딛고 스윙. 10회×2세트. 체크: 피니시에 오른발 뒤꿈치가 서는가
+  - 왼발 쿵 드릴: 다운스윙 시작을 왼발로 바닥을 "쿵" 밟는 동작으로. 15회
+
+▶ 오버스윙형 (백스윙 과다)
+  - 벽 백스윙 리미터: 오른쪽 어깨 뒤 한 뼘에 벽을 두고 클럽 대신 우산으로 벽에 닿기 직전까지만 백스윙. 15회
+  - "어깨 턱 밑" 체크: 거울 보고 왼어깨가 턱 밑에 오면 멈추기. 10회
+
+▶ 템포 불안형 (전환 급가속)
+  - 3:1 메트로놈 드릴: 폰 메트로놈 60bpm, 3박 백스윙-1박 다운스윙 빈손 스윙. 10회×2세트
+  - "하나아-둘" 소리 드릴: 백스윙에 "하나아", 다운스윙에 "둘"을 소리 내며. 15회`;
 
 const ANTI_CLICHE = `[상투 진단 금지 — 개별성 규칙]
 - 다음 표현 단독 사용 금지: "팔로만 스윙", "힘이 많이 들어감", "헤드업",
@@ -498,11 +560,31 @@ function buildCoachPrompt(
     .map((m) => `${MECHANICS_LABEL[m.dim]}(${m.score}/3): ${m.note}`)
     .join("\n  - ");
 
+  const focusHistoryLines = (previous?.focusHistory ?? [])
+    .map(
+      (f, i) =>
+        `  ${i + 1}. ${new Date(f.createdAt).toLocaleDateString("ko-KR")} — "${f.title}"`,
+    )
+    .join("\n");
+
+  const recurringBlock = previous?.recurringWeakDim
+    ? `
+[반복 지적 경고 — 접근을 바꿔야 합니다]
+"${MECHANICS_LABEL[previous.recurringWeakDim]}" 항목이 최근 3회 연속 최저점입니다.
+같은 지적과 같은 드릴을 반복하는 것은 실패한 접근입니다:
+- 이번에는 이 항목을 topFocus로 삼되, "왜 안 고쳐지는지" 근본 원인 관점에서 재진단하세요
+  (예: 스웨이가 3회째라면 스웨이 자체가 아니라 어드레스 체중 분포나 유연성이 원인일 수 있음).
+- 드릴은 이전보다 난이도를 한 단계 낮춘, 더 쉬운 첫 단계 동작으로 처방하세요.
+- coachMessage에서 좌절하지 않도록 다정하게, 그러나 "접근을 바꿔보자"고 솔직하게 안내하세요.`
+    : "";
+
   const homeworkBlock = previous
     ? `[숙제 검사 — 필수]
 이 사용자는 ${new Date(previous.createdAt).toLocaleDateString("ko-KR")}에 같은 클럽으로 분석을 받았고,
 그때의 #1 포커스(숙제)는 "${previous.topFocusTitle}"였습니다.
 당시 항목별 점수: ${previous.mechanicsScores.map((s) => `${MECHANICS_LABEL[s.dim as MechanicsDim] ?? s.dim} ${s.observable === false ? "관찰 불가" : s.score}`).join(", ")}
+${focusHistoryLines ? `\n[최근 숙제 이력 (최신순)]\n${focusHistoryLines}\n과거 숙제와 같은 주제가 다시 약점으로 보이면 그 사실을 언급하세요.` : ""}
+${recurringBlock}
 
 이번 영상·분석관 보고서·현재 점수를 근거로 숙제가 개선됐는지 판정하세요:
 - 이전 또는 현재의 관련 항목이 observable=false이면 개선을 추측하지 말고 not_observable.
@@ -546,13 +628,18 @@ ${ANTI_CLICHE}
 
 ${DIFFERENTIAL_TREE}
 
+${DRILL_LIBRARY}
+
 [드릴 처방 — 절대 규칙. 위반 시 헤드코치 리뷰에서 드릴 적합성 0점]
 - 모든 드릴은 반드시 **집(거실/방) 또는 회사(책상/회의실)** 에서 실행 가능해야 합니다.
 - 골프 클럽 없이 가능하거나, 흔한 가정/사무 용품으로 대체 가능해야 합니다.
 - 허용 도구만 사용: 거울, 의자, 벽, 책, 우산, 빈 페트병, 신문지, 양말 묶음, 손수건, 빗자루, 종이컵, 스마트폰 거치대
 - 절대 금지: 골프 클럽 필수, 골프공 필요, 골프장/연습장 방문, 야외 활동, 골프 매트, 골프 그물, 임팩트 백
 - 각 드릴 detail에는 "무엇을 / 몇 회 또는 몇 분 / 무엇을 체크하는지"를 반드시 포함.
-- 드릴은 감별된 서브타입에 맞게 2~3개.
+- 드릴은 감별된 서브타입에 맞게 2~3개. **위 드릴 템플릿에서 골라 등급 어휘로
+  다듬는 것을 우선**하고, 템플릿 밖 드릴을 쓸 땐 서브타입 정합성을 스스로 검증.
+- 각 드릴에 targetSubtype 필수: 위 감별 트리의 서브타입명(예: "시퀀스형",
+  "얼리 익스텐션형") 또는 서브타입 감별이 필요 없는 드릴이면 "일반".
 
 [강조 포인트 규칙]
 - strengths / weaknesses / drills 각 섹션에서 정확히 1개를 emphasis="key"로 표시.
@@ -565,7 +652,7 @@ ${DIFFERENTIAL_TREE}
   "topFocus": { "title": string, "detail": string, "why": string },
   "strengths":  [{ "title": string, "detail": string, "emphasis": "key" | "normal" }, ...2~3개],
   "weaknesses": [{ "title": string, "detail": string, "evidence": string, "emphasis": "key" | "normal" }, ...2~3개],
-  "drills":     [{ "title": string, "detail": string, "emphasis": "key" | "normal" }, ...2~3개],
+  "drills":     [{ "title": string, "detail": string, "targetSubtype": string, "emphasis": "key" | "normal" }, ...2~3개],
   "coachMessage": string,
   "oneLineSummary": string (40자 이내)
 }
@@ -623,7 +710,10 @@ ${JSON.stringify(coachOutput, null, 2)}
    - 집/회사에서 가능한가? (절대 규칙)
    - 골프장/연습장 필요한 드릴 포함 시 0점.
    - 구체적으로 횟수·체크 포인트 명시되었는가?
-   - 감별된 서브타입에 맞는 드릴인가? 서브타입과 무관한 범용 드릴이면 감점.
+   - 각 드릴의 targetSubtype이 weaknesses에서 감별된 서브타입과 일치하는가?
+     · targetSubtype 누락 → 드릴당 3점 감점
+     · weaknesses에 서브타입 감별이 있는데 드릴이 전부 "일반" → 5점 감점
+     · targetSubtype과 드릴 내용이 불일치(예: 시퀀스형인데 그립 압력 드릴) → 드릴당 5점 감점
 
 6) 간결성·임팩트 (10점)
    - 분량 규칙 준수? (골린이 다정 / 프로 단호)
@@ -683,6 +773,10 @@ export interface PreviousAnalysisContext {
     observable?: boolean;
     confidence?: number;
   }[];
+  /** 최근 최대 3회의 topFocus 이력 (최신순) — 누적 숙제 추적용 */
+  focusHistory?: { createdAt: string; title: string }[];
+  /** 최근 3회 연속 최저점이었던 항목 — 반복 지적이면 근본 원인 재진단 유도 */
+  recurringWeakDim?: MechanicsDim | null;
 }
 
 // ---------- 유틸 ----------
@@ -710,6 +804,7 @@ function normalizeMechanics(raw: unknown): MechanicsScore[] {
         note?: unknown;
         observable?: unknown;
         confidence?: unknown;
+        evidenceSource?: unknown;
       };
       const dim = String(r.dim ?? "") as MechanicsDim;
       if (!allowed.has(dim)) continue;
@@ -718,15 +813,27 @@ function normalizeMechanics(raw: unknown): MechanicsScore[] {
       const score = (observable
         ? Math.max(0, Math.min(3, Math.round(numericScore)))
         : 1) as 0 | 1 | 2 | 3;
-      const confidence = observable
+      const allowedSources = ["lower", "upper", "axis", "direct"] as const;
+      const evidenceSource = allowedSources.includes(
+        r.evidenceSource as (typeof allowedSources)[number],
+      )
+        ? (r.evidenceSource as MechanicsScore["evidenceSource"])
+        : null;
+      let confidence = observable
         ? Math.max(0, Math.min(1, Number(r.confidence ?? 0.6)))
         : 0;
+      // 인용 강제: 관찰 가능한데 근거 출처가 없으면 신뢰도를 0.6으로 캡.
+      // (판독 커버리지 평균 신뢰도에 반영되어 잠정 판정을 유도)
+      if (observable && !evidenceSource) {
+        confidence = Math.min(confidence, 0.6);
+      }
       byDim.set(dim, {
         dim,
         score,
         note: String(r.note ?? "").trim() || (observable ? "관찰 근거 미기재" : "관찰 불가"),
         observable,
         confidence,
+        evidenceSource,
       });
     }
   }
@@ -751,14 +858,17 @@ function normalizePoints(raw: unknown): SwingPoint[] {
         detail?: unknown;
         emphasis?: unknown;
         evidence?: unknown;
+        targetSubtype?: unknown;
       };
       const emphasis: "key" | "normal" = r.emphasis === "key" ? "key" : "normal";
       const evidence = String(r.evidence ?? "").trim();
+      const targetSubtype = String(r.targetSubtype ?? "").trim();
       return {
         title: String(r.title ?? "").trim(),
         detail: String(r.detail ?? "").trim(),
         emphasis,
         ...(evidence ? { evidence } : {}),
+        ...(targetSubtype ? { targetSubtype } : {}),
       };
     })
     .filter((p) => p.title || p.detail);
@@ -834,6 +944,8 @@ export interface AnalyzeVideo {
   view: VideoView;
   filePath: string;
   mimeType: string;
+  /** 브라우저 MediaPipe가 추출한 관절 좌표 (선택). 있으면 위상 감지 1순위 */
+  pose?: PoseTrack;
 }
 
 export interface AnalyzeInput {
@@ -909,14 +1021,19 @@ interface PhaseDetectionResult {
 async function runPhaseDetection(
   video: UploadedVideo,
   fps: number,
+  motion?: { impactCandidateSec: number; swingStartSec: number; swingEndSec: number } | null,
 ): Promise<PhaseDetectionResult> {
   const model = makeModel(PHASE_DETECTION_PROMPT);
+  const motionHint = motion
+    ? `[모션 분석 사전 힌트 — ffmpeg 프레임 차이 기반, 참고용]\n어드레스 종료 ≈ ${motion.swingStartSec.toFixed(2)}s, 임팩트 ≈ ${motion.impactCandidateSec.toFixed(2)}s, 움직임 종료 ≈ ${motion.swingEndSec.toFixed(2)}s 부근으로 추정됩니다.\n이 힌트가 영상과 다르면 영상을 우선하세요.`
+    : "";
   const result = await model.generateContent({
     contents: [
       {
         role: "user",
         parts: [
           { text: `이 영상은 약 ${fps.toFixed(2)}fps입니다. 위상 타임스탬프와 촬영 품질을 JSON으로만 출력하세요.` },
+          ...(motionHint ? [{ text: motionHint }] : []),
           { fileData: { mimeType: video.mimeType, fileUri: video.uri } },
         ],
       },
@@ -1033,6 +1150,7 @@ function normalizeRegionReport(raw: unknown, region: BodyRegion): RegionReport {
 
 async function runRegionSpecialists(
   frames: ExtractedFrame[],
+  poseMetricsBlock = "",
 ): Promise<RegionReport[]> {
   if (frames.length === 0) return [];
   const regions: BodyRegion[] = ["lower", "upper", "axis"];
@@ -1044,6 +1162,9 @@ async function runRegionSpecialists(
           {
             text: `아래 스윙 정지 프레임들을 보고 ${BODY_REGION_LABEL[region]} 관찰 JSON만 출력하세요.`,
           },
+          ...(poseMetricsBlock
+            ? [{ text: `${poseMetricsBlock}\n\n위 정량 측정을 관찰의 보조 근거로 활용하되, 프레임에서 직접 본 것을 우선하세요.` }]
+            : []),
         ];
         for (const f of frames) {
           parts.push({ text: `--- ${f.label} ---` });
@@ -1148,17 +1269,31 @@ export async function analyzeSwingVideo(
   }));
   const viewsUsed = Array.from(new Set(uploadedVideos.map((v) => v.view)));
 
-  // 3) Pass 1: 영상별 스윙 위상 감지 → Pass 2: 감지된 타임스탬프로 정밀 프레임 추출.
-  //    감지 실패 시 고정 비율(10/30/50/70/90%)로 폴백.
+  // 3) Pass 1: 위상 감지 — 우선순위 폴백 체인
+  //    ① 브라우저 포즈(결정적 수학) → ② Gemini 영상 감지 → ③ ffmpeg 모션 분석 → ④ 고정 비율
+  //    Gemini 감지는 촬영 품질 리포트도 겸하므로 포즈가 있어도 항상 실행한다.
+  const poseMetricsList: PoseMetrics[] = [];
   const frameSets = await Promise.all(
     uploads.map(async (u, i) => {
-      let timestamps: PhaseTimestamps | null = null;
+      // ① 포즈 기반 위상 감지 (있으면 최우선 — 재현 100%)
+      const poseTrack = input.videos[i].pose;
+      const poseTimestamps = poseTrack ? detectPhasesFromPose(poseTrack) : null;
+
+      // ③ ffmpeg 모션 분석 (LLM 감지의 사전 힌트 + 폴백. 결정적·저비용)
+      const motion = await analyzeMotion(u.filePath).catch((e: unknown) => {
+        console.warn(`모션 분석 실패 (${u.view}):`, e);
+        return null;
+      });
+
+      // ② Gemini 위상 감지 + 촬영 품질 리포트
+      let geminiTimestamps: PhaseTimestamps | null = null;
       try {
         const detected = await runPhaseDetection(
           uploadedVideos[i],
           videoMetadata[i].metadata.fps,
+          motion,
         );
-        timestamps = detected.timestamps;
+        geminiTimestamps = detected.timestamps;
         videoQuality[i] = {
           ...videoQuality[i],
           ...detected.visual,
@@ -1170,10 +1305,22 @@ export async function analyzeSwingVideo(
             detected.visual.clubVisible !== false,
         };
       } catch (e) {
-        console.warn(`위상 감지 실패 (${u.view}), 고정 비율로 폴백:`, e);
+        console.warn(`위상 감지 실패 (${u.view}):`, e);
         videoQuality[i].warnings.push("AI 촬영 품질 검사를 완료하지 못했어요");
       }
-      return extractKeyFrames(u.filePath, u.view, timestamps ?? undefined).catch(
+
+      const timestamps: PhaseTimestamps | undefined =
+        poseTimestamps ??
+        geminiTimestamps ??
+        (motion ? motionToTimestamps(motion) : undefined);
+
+      // 포즈 정량 지표 (위상이 확정된 뒤 계산 — 헤드코치·분석관 프롬프트에 주입)
+      if (poseTrack && timestamps) {
+        const metrics = computePoseMetrics(poseTrack, timestamps);
+        if (metrics) poseMetricsList.push(metrics);
+      }
+
+      return extractKeyFrames(u.filePath, u.view, timestamps).catch(
         (e: unknown) => {
           console.warn(`키 프레임 추출 실패 (${u.view}), 영상만으로 진행:`, e);
           return [] as ExtractedFrame[];
@@ -1182,9 +1329,10 @@ export async function analyzeSwingVideo(
     }),
   );
   const allFrames = frameSets.flat();
+  const poseMetricsBlock = renderPoseMetrics(poseMetricsList);
 
   // 4) 부위별 전문 분석관 3인 병렬 관찰 (프레임만 사용, 진단 금지)
-  const regionReports = await runRegionSpecialists(allFrames).catch((e) => {
+  const regionReports = await runRegionSpecialists(allFrames, poseMetricsBlock).catch((e) => {
     console.warn("부위별 분석관 실패, 보고서 없이 진행:", e);
     return [] as RegionReport[];
   });
@@ -1195,6 +1343,7 @@ export async function analyzeSwingVideo(
       uploadedVideos,
       allFrames,
       regionReports,
+      poseMetricsBlock,
       input.clubHint,
     );
 
@@ -1221,6 +1370,7 @@ export async function analyzeSwingVideo(
       gateNote,
       observedCount,
       averageConfidence,
+      coverageCapped,
     } = scoreToGradeLevel(finalScores);
     const coach = COACHES[grade];
 
@@ -1315,6 +1465,7 @@ export async function analyzeSwingVideo(
         observed: observedCount,
         total: MECHANICS_DIMENSIONS.length,
         averageConfidence,
+        capped: coverageCapped,
       },
       videoQuality,
       calibrationNote,
@@ -1411,14 +1562,14 @@ const SELF_CALIBRATION_PROMPT = `당신은 ${HEAD_COACH.name}입니다.
   "adjusted": boolean,
   "rationale": string,
   "mechanicsScores": [
-    { "dim": "address",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "takeaway",   "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "top",        "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "transition", "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "impact",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "finish",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "tempo",      "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string },
-    { "dim": "balance",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "note": string }
+    { "dim": "address",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "takeaway",   "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "top",        "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "transition", "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "impact",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "finish",     "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "tempo",      "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string },
+    { "dim": "balance",    "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1, "evidenceSource": "lower"|"upper"|"axis"|"direct"|null, "note": string }
   ]
 }`;
 
@@ -1484,6 +1635,7 @@ async function runHeadJudge(
   videos: UploadedVideo[],
   frames: ExtractedFrame[],
   regionReports: RegionReport[],
+  poseMetricsBlock: string,
   clubHint?: ClubType,
 ): Promise<HeadJudgement> {
   const model = makeModel(HEAD_JUDGE_PROMPT);
@@ -1504,6 +1656,7 @@ async function runHeadJudge(
     { text: hintBlock },
     { text: viewsBlock },
     ...(regionBlock ? [{ text: regionBlock }] : []),
+    ...(poseMetricsBlock ? [{ text: poseMetricsBlock }] : []),
     ...buildMediaParts(videos, frames),
     { text: "\n위 시점들과 분석관 보고서를 모두 종합해 헤드코치 판정 JSON만 출력하세요." },
   ];
@@ -1587,7 +1740,10 @@ async function runCoach(
       `[제공된 시점] ${viewsProvided.map((v) => VIDEO_VIEW_LABEL[v]).join(" + ")}\n` +
       "측면샷은 스윙 플레인·자세각·임팩트에 강하고, 정면샷은 정렬·스웨이·체중 이동에 강합니다. 두 시점이 있으면 모두 활용하세요.",
   });
-  parts.push(...buildMediaParts(videos, frames));
+  // 코치는 티칭 문구 작성이 목적이라 임팩트 버스트(미세 연속 프레임)까지는 불필요.
+  // 버스트는 손-헤드 관계를 정밀 판독하는 헤드코치·분석관에게만 전달해 토큰 절약.
+  const coachFrames = frames.filter((f) => !f.frameOffset);
+  parts.push(...buildMediaParts(videos, coachFrames));
   parts.push({ text: "위 시점들을 종합해 코치 출력 JSON만 작성하세요." });
   const result = await model.generateContent({
     contents: [{ role: "user", parts }],
