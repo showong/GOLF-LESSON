@@ -14,19 +14,10 @@ const STROKE = "#34d399"; // emerald-400 — 저명도, 어두운 배경 위 은
 const ACCENT = "#f59e0b"; // amber-500 — 카메라/타깃 표시
 const BALL = "#e2e8f0"; // slate-200
 
-function CameraGlyph({ x, y, angle = 0 }: { x: number; y: number; angle?: number }) {
-  return (
-    <g transform={`translate(${x} ${y}) rotate(${angle})`} opacity={0.9}>
-      <rect x={-6} y={-4.5} width={12} height={9} rx={2} fill="none" stroke={ACCENT} strokeWidth={1.3} />
-      <path d="M 6 -2.5 L 11 -5 L 11 5 L 6 2.5 Z" fill="none" stroke={ACCENT} strokeWidth={1.3} />
-    </g>
-  );
-}
-
 /**
  * 측면샷: 오른손잡이 DTL(다운더라인) 실영상과 좌우 일치 —
- * 카메라(골퍼 뒤) 기준 골퍼는 왼쪽, 클럽은 오른쪽 아래 볼로 뻗고,
- * 볼은 위쪽 스크린 속으로 날아간다. (사용자 실영상 프레임과 대조해 방향 검증)
+ * 골퍼는 왼쪽에서 힙 힌지 어드레스(척추 ~35° 전경), 클럽은 오른쪽 아래 볼로,
+ * 볼은 위쪽 스크린 속으로 날아간다. (사용자 실영상 프레임과 대조해 방향·자세 검증)
  */
 export function SideViewGuide() {
   return (
@@ -55,7 +46,7 @@ export function SideViewGuide() {
         스크린(타깃)
       </text>
 
-      {/* 골퍼: 왼쪽에서 오른쪽(볼)을 향해 어드레스 — 곡선 실루엣 */}
+      {/* 골퍼: 힙 힌지 어드레스 — 엉덩이 뒤로, 척추 ~35° 전경 (실영상 자세 기준) */}
       <g
         stroke={STROKE}
         strokeWidth={2}
@@ -64,34 +55,27 @@ export function SideViewGuide() {
         fill="none"
         opacity={0.9}
       >
-        {/* 머리 */}
-        <circle cx={55} cy={38} r={7} />
-        {/* 척추 (앞으로 숙임) */}
-        <path d="M 57 45 Q 60 54 64 64" />
-        {/* 팔 → 손 */}
-        <path d="M 59 48 Q 69 54 77 62" />
-        {/* 다리 (무릎 굽힘) */}
-        <path d="M 64 64 Q 62 82 66 99" />
-        <path d="M 64 64 Q 56 81 59 99" />
+        {/* 머리 (손 위쪽으로 나옴) */}
+        <circle cx={78} cy={36} r={7} />
+        {/* 척추: 어깨(74,42) → 골반(60,66), 수직 대비 약 35° 전경 */}
+        <path d="M 74 42 Q 66 52 60 66" />
+        {/* 팔: 어깨에서 거의 수직으로 늘어져 손(76,64)으로 */}
+        <path d="M 72 46 Q 74 55 76 64" />
+        {/* 다리 (무릎 굽힘, 골반이 발보다 뒤) */}
+        <path d="M 60 66 Q 66 82 64 99" />
+        <path d="M 60 66 Q 58 83 55 99" />
         {/* 클럽 샤프트 + 헤드 */}
-        <path d="M 77 62 L 88 92" strokeWidth={1.8} />
-        <path d="M 88 92 Q 90 96 96 95" strokeWidth={2.2} />
+        <path d="M 76 64 L 92 92" strokeWidth={1.8} />
+        <path d="M 92 92 Q 94 96 100 95" strokeWidth={2.2} />
       </g>
       {/* 볼 */}
-      <circle cx={100} cy={96} r={3} fill={BALL} />
+      <circle cx={103} cy={96} r={3} fill={BALL} />
 
       {/* 볼 비행: 스크린 속으로 */}
       <g stroke={ACCENT} strokeWidth={1.3} fill="none" opacity={0.9}>
-        <path d="M 105 92 Q 119 76 131 60" strokeDasharray="4 3" />
-        <path d="M 124 61 L 132 58 L 129 66" />
+        <path d="M 108 92 Q 121 76 132 60" strokeDasharray="4 3" />
+        <path d="M 125 61 L 133 58 L 130 66" />
       </g>
-
-      {/* 카메라 위치: 골퍼 뒤쪽(왼쪽), 손 높이 */}
-      <CameraGlyph x={26} y={58} angle={0} />
-      <line x1={40} y1={58} x2={46} y2={56} stroke={ACCENT} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
-      <text x={27} y={76} fontSize={7.5} fill={ACCENT} textAnchor="middle" opacity={0.95}>
-        여기서 촬영
-      </text>
     </svg>
   );
 }
@@ -135,12 +119,6 @@ export function FrontViewGuide() {
       {/* 볼 */}
       <circle cx={125} cy={97} r={3} fill={BALL} />
 
-      {/* 카메라 위치: 정면 가슴 높이 */}
-      <CameraGlyph x={34} y={62} angle={0} />
-      <line x1={48} y1={62} x2={80} y2={58} stroke={ACCENT} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
-      <text x={34} y={78} fontSize={7.5} fill={ACCENT} textAnchor="middle" opacity={0.95}>
-        여기서 촬영
-      </text>
     </svg>
   );
 }
