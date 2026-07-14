@@ -1,6 +1,9 @@
 "use client";
 
 import type { CoachPersona } from "@/lib/coaches";
+import SkeletonPhaseStrip, {
+  type SkeletonSource,
+} from "@/components/SkeletonPhaseStrip";
 import {
   FREQUENCY_LABEL,
   MECHANICS_LABEL,
@@ -36,6 +39,7 @@ interface Props {
     progress?: ProgressInfo;
     labels: { club: string; grade: string };
   };
+  skeletonSources?: SkeletonSource[];
 }
 
 const DIRECTION_LABEL: Record<ProgressDelta["direction"], string> = {
@@ -161,7 +165,7 @@ function PointList({
   );
 }
 
-export default function AnalysisResult({ data }: Props) {
+export default function AnalysisResult({ data, skeletonSources = [] }: Props) {
   const { record, delta, coach, headCoach, labels, progress } = data;
   const a = record.analysis;
   const confidence = Math.round(a.clubConfidence * 100);
@@ -261,6 +265,10 @@ export default function AnalysisResult({ data }: Props) {
           판정 근거: {a.gradeRationale}
         </p>
       </div>
+
+      {skeletonSources.length > 0 && (
+        <SkeletonPhaseStrip analysis={a} sources={skeletonSources} />
+      )}
 
       {a.homeworkCheck && (
         <HomeworkCard homework={a.homeworkCheck} coachName={coach.name} />
@@ -911,7 +919,7 @@ function SessionCard({
     <div className="rounded-2xl border border-fairway-100 bg-white p-4 shadow-sm sm:p-5">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-fairway-900">
-          🔁 스윙 일관성 분석 (스윙 {session.swingCount}개)
+          🔁 멀티샷 분석 (스윙 {session.swingCount}개)
         </h3>
         <span className={`text-sm font-bold ${tone.text}`}>
           {score}/100 · {tone.label}
@@ -923,6 +931,8 @@ function SessionCard({
       <p className="mt-1 text-[11px] text-fairway-700/70">
         스윙 간 항목별 점수 편차 기반. 등급은 스윙 {session.swingCount}개의
         중앙값으로 판정되어 한 번의 좋은/나쁜 스윙에 흔들리지 않아요.
+        {(session.sideVideoCount || session.frontVideoCount) &&
+          ` 측면 ${session.sideVideoCount ?? 0}개 · 정면 ${session.frontVideoCount ?? 0}개를 함께 비교했습니다.`}
       </p>
 
       {/* 스윙별 가중 점수 미니 바 */}
@@ -958,9 +968,9 @@ function SessionCard({
 
       <div className="mt-3 grid gap-2 sm:grid-cols-3">
         <FaultGroup
-          title="습관적"
+          title="공통 문제"
           badge="bg-rose-600"
-          desc="스윙 60%↑ · 교정 1순위"
+          desc="스윙 60%↑ · 반복 패턴"
           faults={session.habitualFaults}
         />
         <FaultGroup
@@ -970,9 +980,9 @@ function SessionCard({
           faults={session.intermittentFaults}
         />
         <FaultGroup
-          title="드물지만 치명적"
+          title="크리티컬"
           badge="bg-violet-600"
-          desc="1회지만 구질에 직접 영향"
+          desc="빈도는 낮지만 구질에 직접 영향"
           faults={session.rareCriticalFaults}
         />
       </div>

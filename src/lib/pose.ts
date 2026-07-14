@@ -113,25 +113,34 @@ export function detectPhasesFromPose(track: PoseTrack): PhaseTimestamps | null {
   // 다운스윙 대략 위치: 최대 속도 지점 (임팩트 확정은 아래에서 별도)
   const roughPeakIdx = smooth.indexOf(peakSpeed);
 
-  // 어드레스: 최대 속도 지점에서 뒤로 가며 마지막 "정지 구간"(속도 < quiet 3프레임 지속)의 끝
-  let addressIdx = 0;
-  for (let i = roughPeakIdx; i >= 2; i--) {
-    if (smooth[i] < quiet && smooth[i - 1] < quiet && smooth[i - 2] < quiet) {
-      addressIdx = i;
-      break;
-    }
-  }
-
-  // 탑: 어드레스~최대속도 사이에서 손목이 가장 높은(y 최소) 지점
-  let topIdx = addressIdx;
+  // 탑: 다운스윙 최대 속도 이전에서 손목이 가장 높은(y 최소) 지점.
+  // 탑에서 잠시 멈추는 스윙을 "마지막 정지 구간 = 어드레스"로 오인하지 않도록
+  // 탑을 먼저 확정한 뒤, 그 이전의 가장 낮은 손 위치에서 어드레스를 찾는다.
+  let topIdx = 0;
   let minY = Infinity;
-  for (let i = addressIdx; i <= roughPeakIdx; i++) {
+  for (let i = 0; i <= roughPeakIdx; i++) {
     const w = wrist[i];
     if (w && w.y < minY) {
       minY = w.y;
       topIdx = i;
     }
   }
+
+  // 어드레스: 탑 이전 손목의 최저 위치(y 최대) 부근 중 가장 마지막 프레임.
+  // 와글이나 짧은 준비 동작이 있어도 실제 백스윙 시작 직전을 선택한다.
+  let maxY = -Infinity;
+  for (let i = 0; i < topIdx; i++) {
+    const w = wrist[i];
+    if (w) maxY = Math.max(maxY, w.y);
+  }
+  if (!Number.isFinite(maxY)) return null;
+  let addressIdx = 0;
+  const addressTolerance = 0.015;
+  for (let i = 0; i < topIdx; i++) {
+    const w = wrist[i];
+    if (w && w.y >= maxY - addressTolerance) addressIdx = i;
+  }
+
   // 스윙 패턴 검증: 실제로 손이 올라갔는가
   const addrW = wrist[addressIdx];
   if (!addrW || topIdx <= addressIdx) return null;

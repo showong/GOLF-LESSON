@@ -93,14 +93,17 @@ export const FREQUENCY_LABEL: Record<
   NonNullable<SwingPoint["frequency"]>,
   string
 > = {
-  habitual: "습관적 (대부분의 스윙)",
+  habitual: "공통 문제 (대부분의 스윙)",
   intermittent: "간헐적 (일부 스윙)",
-  "rare-critical": "드물지만 치명적",
+  "rare-critical": "빈도는 낮지만 크리티컬",
 };
 
 /** 복수 스윙 일관성 분석 세션 요약 */
 export interface SwingSessionInfo {
   swingCount: number;
+  /** 멀티샷에서 실제 제공된 시점별 스윙 수 */
+  sideVideoCount?: number;
+  frontVideoCount?: number;
   /** 스윙 간 반복성 0~100. 항목별 점수 편차 기반, 서버에서 결정적으로 계산 */
   consistencyScore: number;
   /** 스윙별 가중 점수 (미니 차트용) */

@@ -58,11 +58,22 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "닉네임이 필요합니다." }, { status: 400 });
   }
 
-  // === 일관성 분석 모드: "swings" 필드로 같은 클럽 스윙 2~5개 ===
+  // === 멀티샷 모드: 스윙 1~3번 각각 측면/정면 영상을 받을 수 있음 ===
+  const multiSwings = Array.from({ length: 3 }, (_, index) => {
+    const videos: { view: VideoView; file: File }[] = [];
+    const side = form.get(`multiSide${index}`);
+    const front = form.get(`multiFront${index}`);
+    if (side instanceof File && side.size > 0) videos.push({ view: "side", file: side });
+    if (front instanceof File && front.size > 0) videos.push({ view: "front", file: front });
+    return { index, videos };
+  }).filter((swing) => swing.videos.length > 0);
+
+  // 이전 일관성 분석 클라이언트와의 하위 호환: 같은 시점 영상 2~5개.
   const swingFiles = form
     .getAll("swings")
     .filter((f): f is File => f instanceof File && f.size > 0);
-  const isSessionMode = swingFiles.length > 0;
+  const isLegacySessionMode = swingFiles.length > 0;
+  const isSessionMode = multiSwings.length > 0 || isLegacySessionMode;
 
   // 측면샷(권장)과 정면샷(선택) 둘 다 받음. 둘 다 또는 둘 중 하나.
   // 하위 호환: 단일 "video" 필드만 들어오면 측면샷으로 간주.
@@ -86,19 +97,29 @@ export async function POST(req: Request) {
   }
 
   if (isSessionMode) {
-    if (swingFiles.length < 2 || swingFiles.length > 5) {
+    if (multiSwings.length > 0 && (multiSwings.length < 2 || multiSwings.length > 3)) {
       return NextResponse.json(
-        { error: "일관성 분석은 같은 클럽 스윙 2~5개가 필요합니다." },
+        { error: "멀티샷 분석은 같은 클럽 스윙 2~3개가 필요합니다." },
+        { status: 400 },
+      );
+    }
+    if (isLegacySessionMode && (swingFiles.length < 2 || swingFiles.length > 5)) {
+      return NextResponse.json(
+        { error: "기존 일관성 분석은 같은 클럽 스윙 2~5개가 필요합니다." },
         { status: 400 },
       );
     }
     if (!clubHint) {
       return NextResponse.json(
-        { error: "일관성 분석은 클럽을 직접 선택해야 합니다. (클럽이 섞이면 공통 문제 분석이 무의미해져요)" },
+        { error: "멀티샷 분석은 클럽을 직접 선택해야 합니다. (클럽이 섞이면 공통 문제 분석이 무의미해져요)" },
         { status: 400 },
       );
     }
-    for (const file of swingFiles) {
+    const sessionFiles = [
+      ...multiSwings.flatMap((swing) => swing.videos.map((video) => video.file)),
+      ...swingFiles,
+    ];
+    for (const file of sessionFiles) {
       if (!ALLOWED_MIME.has(file.type)) {
         return NextResponse.json(
           { error: `지원하지 않는 영상 형식입니다: ${file.type || "unknown"}` },
@@ -140,7 +161,9 @@ export async function POST(req: Request) {
   await fs.mkdir(uploadDir, { recursive: true });
 
   const saved: SavedFile[] = [];
-  const savedSwings: { tmpPath: string; mimeType: string }[] = [];
+  const savedSwings: {
+    videos: { view: VideoView; tmpPath: string; mimeType: string }[];
+  }[] = [];
   try {
     const persist = async (file: File): Promise<string> => {
       const ext = path.extname(file.name) || ".mp4";
@@ -150,8 +173,26 @@ export async function POST(req: Request) {
       return tmpPath;
     };
     if (isSessionMode) {
-      for (const file of swingFiles) {
-        savedSwings.push({ tmpPath: await persist(file), mimeType: file.type });
+      if (multiSwings.length > 0) {
+        for (const swing of multiSwings) {
+          const videos: { view: VideoView; tmpPath: string; mimeType: string }[] = [];
+          for (const video of swing.videos) {
+            videos.push({
+              view: video.view,
+              tmpPath: await persist(video.file),
+              mimeType: video.file.type,
+            });
+          }
+          savedSwings.push({ videos });
+        }
+      } else {
+        const sessionView: VideoView =
+          String(form.get("sessionView") ?? "side") === "front" ? "front" : "side";
+        for (const file of swingFiles) {
+          savedSwings.push({
+            videos: [{ view: sessionView, tmpPath: await persist(file), mimeType: file.type }],
+          });
+        }
       }
     }
     for (const { view, file } of incoming) {
@@ -231,17 +272,16 @@ export async function POST(req: Request) {
       pose: poseFor(s.view),
     }));
 
-    const sessionView: VideoView =
-      String(form.get("sessionView") ?? "side") === "front" ? "front" : "side";
-
     const analysis = isSessionMode
       ? await analyzeSwingSession({
           nickname: user.nickname,
           clubType: clubHint!,
-          view: sessionView,
           swings: savedSwings.map((s) => ({
-            filePath: s.tmpPath,
-            mimeType: s.mimeType,
+            videos: s.videos.map((video) => ({
+              view: video.view,
+              filePath: video.tmpPath,
+              mimeType: video.mimeType,
+            })),
           })),
           previousByClub,
         })
@@ -319,7 +359,9 @@ export async function POST(req: Request) {
   } finally {
     await Promise.all([
       ...saved.map((s) => fs.unlink(s.tmpPath).catch(() => {})),
-      ...savedSwings.map((s) => fs.unlink(s.tmpPath).catch(() => {})),
+      ...savedSwings.flatMap((s) =>
+        s.videos.map((video) => fs.unlink(video.tmpPath).catch(() => {})),
+      ),
     ]);
   }
 }

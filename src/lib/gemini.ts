@@ -1782,22 +1782,24 @@ async function runReview(
   return normalizeReview(parseJson(result.response.text()), attempt);
 }
 
-// ---------- 일관성 분석 (복수 스윙 세션) ----------
+// ---------- 멀티샷 분석 (복수 스윙·멀티뷰 세션) ----------
 
 export interface SessionInput {
   nickname: string;
   clubType: ClubType;
-  view: VideoView;
-  /** 같은 클럽으로 친 스윙 영상 2~5개 */
-  swings: { filePath: string; mimeType: string }[];
+  /** 같은 클럽으로 친 스윙 2~5개. 각 스윙은 측면/정면 또는 둘 다 포함 가능 */
+  swings: {
+    videos: { view: VideoView; filePath: string; mimeType: string }[];
+  }[];
   previousByClub?: Partial<Record<ClubType, PreviousAnalysisContext>>;
 }
 
 const SESSION_JUDGE_PROMPT = `당신은 ${HEAD_COACH.name}입니다. ${HEAD_COACH.voiceGuide}
 
-[임무 — 복수 스윙 일관성 판정]
-같은 골퍼가 같은 클럽으로 친 스윙 여러 개의 정지 프레임(스윙별 어드레스/탑/임팩트)이
-제공됩니다. 각 스윙을 **독립적으로** 채점하고 결함을 기록하세요.
+[임무 — 멀티샷 공통·크리티컬 문제 판정]
+같은 골퍼가 같은 클럽으로 친 스윙 여러 개의 정지 프레임(스윙별 측면/정면,
+어드레스/탑/임팩트)이 제공됩니다. 같은 번호의 측면·정면은 동일한 스윙입니다.
+각 스윙을 **독립적으로** 채점하고, 두 시점이 있으면 상호 보완해 결함을 기록하세요.
 어떤 결함이 습관인지/우연인지는 서버가 빈도로 계산하므로 판단하지 마세요.
 
 [채점 — 스윙마다 8항목]
@@ -1862,7 +1864,7 @@ function normalizePerSwing(raw: unknown, swingCount: number): PerSwingJudgement[
 }
 
 /**
- * 복수 스윙 일관성 분석.
+ * 멀티샷 분석.
  * 스윙별 관찰·채점(LLM) → 서버 집계(중앙값·일관성·빈도 분류) → 코치 티칭 → 리뷰.
  */
 export async function analyzeSwingSession(
@@ -1872,23 +1874,35 @@ export async function analyzeSwingSession(
   if (n < 2 || n > 5) {
     throw new Error("일관성 분석은 같은 클럽 스윙 2~5개가 필요합니다.");
   }
-  for (const s of input.swings) {
-    if (!fs.existsSync(s.filePath)) {
-      throw new Error(`업로드된 파일을 찾을 수 없습니다: ${s.filePath}`);
+  for (const [index, swing] of input.swings.entries()) {
+    if (swing.videos.length === 0) {
+      throw new Error(`스윙 ${index + 1}에 분석할 영상이 없습니다.`);
+    }
+    for (const video of swing.videos) {
+      if (!fs.existsSync(video.filePath)) {
+        throw new Error(`업로드된 파일을 찾을 수 없습니다: ${video.filePath}`);
+      }
     }
   }
 
   // 품질 사전 검사 (판독 불가 파일만 차단)
-  const metadatas = await Promise.all(
-    input.swings.map((s) => inspectVideoMetadata(s.filePath)),
+  const qualityEntries = await Promise.all(
+    input.swings.flatMap((swing, swingIndex) =>
+      swing.videos.map(async (video) => ({
+        swing: swingIndex + 1,
+        view: video.view,
+        quality: technicalQualityReport(
+          video.view,
+          await inspectVideoMetadata(video.filePath),
+        ),
+      })),
+    ),
   );
-  const videoQuality: VideoQualityReport[] = metadatas.map((m) =>
-    technicalQualityReport(input.view, m),
-  );
-  const rejected = videoQuality.findIndex((q) => !q.passed);
-  if (rejected >= 0) {
+  const videoQuality: VideoQualityReport[] = qualityEntries.map((entry) => entry.quality);
+  const rejected = qualityEntries.find((entry) => !entry.quality.passed);
+  if (rejected) {
     throw new Error(
-      `스윙 ${rejected + 1} 영상 품질을 확인해 주세요: ${videoQuality[rejected].warnings.join(" · ") || "해상도 또는 길이가 분석 기준에 미달"}`,
+      `스윙 ${rejected.swing} ${VIDEO_VIEW_LABEL[rejected.view]} 영상 품질을 확인해 주세요: ${rejected.quality.warnings.join(" · ") || "해상도 또는 길이가 분석 기준에 미달"}`,
     );
   }
 
@@ -1897,17 +1911,25 @@ export async function analyzeSwingSession(
   // 스윙별: 모션 분석(결정적) → 프레임 3장(어드레스/탑/임팩트, 버스트 없음)
   // 세션 모드는 LLM 위상 감지를 생략해 비용을 스윙 수와 무관하게 유지한다.
   const frameSets = await Promise.all(
-    input.swings.map(async (s, i) => {
-      const motion = await analyzeMotion(s.filePath).catch(() => null);
-      const timestamps = motion ? motionToTimestamps(motion) : undefined;
-      return extractKeyFrames(s.filePath, input.view, timestamps, {
-        impactBurst: false,
-        phases: ["address", "top", "impact"],
-        labelPrefix: `[스윙 ${i + 1}]`,
-      }).catch((e: unknown) => {
-        console.warn(`세션 프레임 추출 실패 (스윙 ${i + 1}):`, e);
-        return [] as ExtractedFrame[];
-      });
+    input.swings.map(async (swing, i) => {
+      const byView = await Promise.all(
+        swing.videos.map(async (video) => {
+          const motion = await analyzeMotion(video.filePath).catch(() => null);
+          const timestamps = motion ? motionToTimestamps(motion) : undefined;
+          return extractKeyFrames(video.filePath, video.view, timestamps, {
+            impactBurst: false,
+            phases: ["address", "top", "impact"],
+            labelPrefix: `[스윙 ${i + 1} ${VIDEO_VIEW_LABEL[video.view]}]`,
+          }).catch((e: unknown) => {
+            console.warn(
+              `멀티샷 프레임 추출 실패 (스윙 ${i + 1} ${video.view}):`,
+              e,
+            );
+            return [] as ExtractedFrame[];
+          });
+        }),
+      );
+      return byView.flat();
     }),
   );
   if (frameSets.every((f) => f.length === 0)) {
@@ -1916,9 +1938,15 @@ export async function analyzeSwingSession(
 
   // === 세션 판정 (1회 호출, 스윙별 독립 채점) ===
   const judgeModel = makeModel(SESSION_JUDGE_PROMPT, 8192);
+  const viewSummary = input.swings
+    .map(
+      (swing, index) =>
+        `스윙 ${index + 1}: ${swing.videos.map((v) => VIDEO_VIEW_LABEL[v.view]).join("+")}`,
+    )
+    .join(" · ");
   const judgeParts: Content["parts"] = [
     {
-      text: `[세션 정보] 사용자 지정 클럽: ${CLUB_LABEL[input.clubType]} · 시점: ${VIDEO_VIEW_LABEL[input.view]} · 스윙 ${n}개\n스윙별 프레임이 아래에 순서대로 옵니다. perSwing은 반드시 ${n}개.`,
+      text: `[멀티샷 정보] 사용자 지정 클럽: ${CLUB_LABEL[input.clubType]} · 스윙 ${n}개\n${viewSummary}\n같은 스윙의 두 시점을 합쳐 한 번만 채점하세요. perSwing은 반드시 ${n}개.`,
     },
   ];
   frameSets.forEach((frames, i) => {
@@ -1961,7 +1989,7 @@ export async function analyzeSwingSession(
   // === 코치 티칭 (텍스트 전용 — 판정 결과가 충분히 풍부) ===
   const previous = input.previousByClub?.[input.clubType];
   const sessionBlock = `
-[일관성 분석 세션 — 이 정보를 반드시 활용하세요]
+[멀티샷 공통·크리티컬 분석 — 이 정보를 반드시 활용하세요]
 - 스윙 수: ${n}개 · 일관성 점수: ${agg.consistencyScore}/100
   (80↑ 반복성 좋음 / 50~79 보통 / 50 미만이면 "일관성 자체"가 최우선 과제)
 - 습관적 문제 (스윙 60%↑에서 발생 — 교정 1순위):
@@ -1973,7 +2001,7 @@ ${agg.rareCriticalFaults.map((f) => `  · ${f.title}`).join("\n") || "  (없음)
 ${agg.mismatchedSwings.length > 0 ? `- 주의: 스윙 ${agg.mismatchedSwings.join(", ")}번은 지정 클럽과 달라 보임 (사용자에게 알릴 것)` : ""}
 
 [세션 모드 티칭 규칙]
-- topFocus는 습관적 문제에서 선정 (습관이 없으면 일관성 자체 또는 간헐 문제).
+- topFocus는 공통적으로 반복된 습관적 문제에서 선정 (없으면 일관성 자체 또는 간헐 문제).
 - weaknesses의 각 항목에 frequency 필드 필수:
   "habitual" | "intermittent" | "rare-critical"
 - evidence에는 발생 횟수를 포함 (예: "5개 스윙 중 4개에서 관찰").
@@ -2037,7 +2065,9 @@ ${agg.mismatchedSwings.length > 0 ? `- 주의: 스윙 ${agg.mismatchedSwings.joi
   }
 
   return {
-    views: [input.view],
+    views: Array.from(
+      new Set(input.swings.flatMap((swing) => swing.videos.map((video) => video.view))),
+    ),
     clubType: input.clubType,
     clubConfidence: 1,
     clubCues: ["사용자가 직접 지정함"],
@@ -2067,6 +2097,12 @@ ${agg.mismatchedSwings.length > 0 ? `- 주의: 스윙 ${agg.mismatchedSwings.joi
     review,
     session: {
       swingCount: n,
+      sideVideoCount: input.swings.filter((swing) =>
+        swing.videos.some((video) => video.view === "side"),
+      ).length,
+      frontVideoCount: input.swings.filter((swing) =>
+        swing.videos.some((video) => video.view === "front"),
+      ).length,
       consistencyScore: agg.consistencyScore,
       perSwingWeighted: agg.perSwingWeighted,
       habitualFaults: agg.habitualFaults,

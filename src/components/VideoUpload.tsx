@@ -1,18 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { extractPoseTrack } from "@/lib/pose-client";
 import ViewGuideIllustration from "@/components/ViewGuide";
+import type { SkeletonSource } from "@/components/SkeletonPhaseStrip";
 import type { PoseTrack } from "@/lib/pose";
+import type { PoseExtractionResult } from "@/lib/pose-client";
 
 interface Props {
   nickname: string;
-  onResult: (data: unknown) => void;
+  onResult: (data: unknown, skeletonSources: SkeletonSource[]) => void;
 }
 
 type ClubHint = "" | "driver" | "iron" | "approach";
-type PoseStatus = "idle" | "extracting" | "ready" | "unavailable";
-type UploadTab = "single" | "session";
+type PoseStatus = "idle" | "extracting" | "ready" | "failed";
+type PoseState = { status: PoseStatus; result?: PoseExtractionResult };
+type UploadTab = "single" | "multi";
+type MultiSwing = { side: File | null; front: File | null };
+
+const emptyMultiSwings = (): MultiSwing[] =>
+  Array.from({ length: 3 }, () => ({ side: null, front: null }));
 
 export default function VideoUpload({ nickname, onResult }: Props) {
   const sideRef = useRef<HTMLInputElement>(null);
@@ -23,8 +29,7 @@ export default function VideoUpload({ nickname, onResult }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<UploadTab>("single");
-  const [swingFiles, setSwingFiles] = useState<File[]>([]);
-  const swingsRef = useRef<HTMLInputElement>(null);
+  const [multiSwings, setMultiSwings] = useState<MultiSwing[]>(emptyMultiSwings);
 
   // 브라우저 스켈레톤(관절) 추출 — 파일 선택 즉시 백그라운드로 진행.
   // 실패해도 분석은 서버 폴백으로 정상 동작하므로 제출을 막지 않는다.
@@ -32,30 +37,58 @@ export default function VideoUpload({ nickname, onResult }: Props) {
     side: null,
     front: null,
   });
-  const [poseStatus, setPoseStatus] = useState<{
-    side: PoseStatus;
-    front: PoseStatus;
-  }>({ side: "idle", front: "idle" });
+  const poseTaskRef = useRef<{
+    side: Promise<PoseExtractionResult> | null;
+    front: Promise<PoseExtractionResult> | null;
+  }>({ side: null, front: null });
+  const [poseState, setPoseState] = useState<{ side: PoseState; front: PoseState }>({
+    side: { status: "idle" },
+    front: { status: "idle" },
+  });
 
   function startPoseExtraction(view: "side" | "front", file: File | null) {
     poseRef.current[view] = null;
     if (!file) {
-      setPoseStatus((s) => ({ ...s, [view]: "idle" }));
+      poseTaskRef.current[view] = null;
+      setPoseState((state) => ({ ...state, [view]: { status: "idle" } }));
       return;
     }
-    setPoseStatus((s) => ({ ...s, [view]: "extracting" }));
-    extractPoseTrack(file, view)
-      .then((track) => {
-        // 추출 도중 파일이 바뀌었으면 무시
-        poseRef.current[view] = track;
-        setPoseStatus((s) => ({ ...s, [view]: track ? "ready" : "unavailable" }));
+    setPoseState((state) => ({ ...state, [view]: { status: "extracting" } }));
+    // 초기 화면(SVG 가이드)은 MediaPipe 번들과 분리해 항상 렌더링한다.
+    // 실제 영상이 선택된 시점에만 무거운 스켈레톤 모듈을 지연 로드한다.
+    const task = import("@/lib/pose-client")
+      .then(({ extractPoseTrackDetailed }) => extractPoseTrackDetailed(file, view))
+      .catch(
+        (): PoseExtractionResult => ({
+          track: null,
+          attemptedFrames: 0,
+          detectedFrames: 0,
+          delegate: null,
+          failure: {
+            code: "model-load",
+            message: "관절 분석 모듈을 불러오지 못했어요.",
+            retryable: true,
+          },
+        }),
+      );
+    poseTaskRef.current[view] = task;
+    task
+      .then((result) => {
+        // 추출 도중 파일이 바뀌었으면 이전 작업 결과를 무시한다.
+        if (poseTaskRef.current[view] !== task) return;
+        poseRef.current[view] = result.track;
+        setPoseState((state) => ({
+          ...state,
+          [view]: { status: result.track ? "ready" : "failed", result },
+        }));
       })
-      .catch(() => {
-        setPoseStatus((s) => ({ ...s, [view]: "unavailable" }));
-      });
+      .catch(() => {});
   }
 
   async function submit() {
+    const selectedMultiSwings = multiSwings
+      .map((swing, index) => ({ ...swing, index }))
+      .filter((swing) => swing.side || swing.front);
     if (!nickname.trim()) {
       setError("먼저 닉네임을 입력해 주세요.");
       return;
@@ -64,24 +97,33 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       setError("측면샷 또는 정면샷 중 최소 1개는 업로드해 주세요.");
       return;
     }
-    if (tab === "session") {
-      if (swingFiles.length < 2 || swingFiles.length > 5) {
-        setError("일관성 분석은 같은 클럽 스윙 영상 2~5개가 필요해요.");
+    if (tab === "multi") {
+      if (selectedMultiSwings.length < 2 || selectedMultiSwings.length > 3) {
+        setError("멀티샷 분석은 같은 클럽 스윙 2~3개가 필요해요.");
         return;
       }
       if (!clubHint) {
-        setError("일관성 분석은 어떤 클럽으로 쳤는지 꼭 선택해 주세요.");
+        setError("멀티샷 분석은 어떤 클럽으로 쳤는지 꼭 선택해 주세요.");
         return;
       }
     }
     setError(null);
     setBusy(true);
     try {
+      if (tab === "single") {
+        await Promise.all(
+          [poseTaskRef.current.side, poseTaskRef.current.front].filter(
+            (task): task is Promise<PoseExtractionResult> => task !== null,
+          ),
+        );
+      }
       const fd = new FormData();
       fd.append("nickname", nickname.trim());
-      if (tab === "session") {
-        for (const f of swingFiles) fd.append("swings", f);
-        fd.append("sessionView", "side");
+      if (tab === "multi") {
+        for (const swing of selectedMultiSwings) {
+          if (swing.side) fd.append(`multiSide${swing.index}`, swing.side);
+          if (swing.front) fd.append(`multiFront${swing.index}`, swing.front);
+        }
       } else {
         if (sideFile) fd.append("videoSide", sideFile);
         if (frontFile) fd.append("videoFront", frontFile);
@@ -97,13 +139,21 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       const res = await fetch("/api/analyze", { method: "POST", body: fd });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "분석 실패");
-      onResult(data);
+      const skeletonSources: SkeletonSource[] = [];
+      if (tab === "single") {
+        if (sideFile && poseRef.current.side) {
+          skeletonSources.push({ view: "side", file: sideFile, track: poseRef.current.side });
+        }
+        if (frontFile && poseRef.current.front) {
+          skeletonSources.push({ view: "front", file: frontFile, track: poseRef.current.front });
+        }
+      }
+      onResult(data, skeletonSources);
       setSideFile(null);
       setFrontFile(null);
-      setSwingFiles([]);
+      setMultiSwings(emptyMultiSwings());
       if (sideRef.current) sideRef.current.value = "";
       if (frontRef.current) frontRef.current.value = "";
-      if (swingsRef.current) swingsRef.current.value = "";
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류");
     } finally {
@@ -113,6 +163,15 @@ export default function VideoUpload({ nickname, onResult }: Props) {
 
   const sizeMB = (f: File) => Math.round((f.size / 1024 / 1024) * 10) / 10;
   const hasFile = sideFile !== null || frontFile !== null;
+  const selectedMultiCount = multiSwings.filter((s) => s.side || s.front).length;
+  const selectedSideCount = multiSwings.filter((s) => s.side).length;
+  const selectedFrontCount = multiSwings.filter((s) => s.front).length;
+
+  function updateMultiFile(index: number, view: "side" | "front", file: File | null) {
+    setMultiSwings((current) =>
+      current.map((swing, i) => (i === index ? { ...swing, [view]: file } : swing)),
+    );
+  }
 
   return (
     <section className="rounded-2xl border border-fairway-100 bg-white p-4 shadow-sm sm:p-6">
@@ -125,7 +184,7 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         {(
           [
             { value: "single", label: "정밀 분석", sub: "측면+정면 1스윙" },
-            { value: "session", label: "일관성 분석", sub: "같은 클럽 2~5스윙" },
+            { value: "multi", label: "멀티샷", sub: "정면·측면 최대 3스윙" },
           ] as { value: UploadTab; label: string; sub: string }[]
         ).map((t) => (
           <button
@@ -152,29 +211,25 @@ export default function VideoUpload({ nickname, onResult }: Props) {
           <>측면샷과 정면샷을 함께 올리면 더 정확해요. 한 시점만 올려도 분석 가능합니다.
         스마트폰에서는 <strong>카메라로 즉석 촬영</strong>도 됩니다.</>
         ) : (
-          <>같은 클럽으로 친 스윙 <strong>2~5개</strong>(측면샷 권장, 같은 각도)를 올리면
-        스윙 간 <strong>일관성 점수</strong>와 함께 문제를 <strong>습관적 / 간헐적 /
-        드물지만 치명적</strong>으로 나눠 진단해 드려요. 한 번의 좋은/나쁜 스윙이
-        등급을 흔들지 않아요.</>
+          <>같은 클럽으로 친 스윙 <strong>2~3개</strong>를 등록하고, 각 스윙마다
+        측면·정면 영상을 함께 올릴 수 있어요. 반복되는 <strong>공통 문제</strong>와
+        빈도는 낮지만 결과에 큰 영향을 주는 <strong>크리티컬 문제</strong>를 분리해 진단합니다.</>
         )}
       </p>
 
-      {tab === "session" && (
+      {tab === "multi" && (
         <div className="mt-4 rounded-xl border-2 border-dashed border-fairway-100 p-3">
           <div className="flex items-center justify-between">
             <span className="text-sm font-semibold text-fairway-900">
-              스윙 영상 여러 개 선택
+              스윙별 영상 등록
               <span className="ml-1.5 rounded bg-fairway-700 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                2~5개
+                최대 3스윙
               </span>
             </span>
-            {swingFiles.length > 0 && (
+            {selectedMultiCount > 0 && (
               <button
                 type="button"
-                onClick={() => {
-                  setSwingFiles([]);
-                  if (swingsRef.current) swingsRef.current.value = "";
-                }}
+                onClick={() => setMultiSwings(emptyMultiSwings())}
                 className="rounded px-2 py-1 text-[11px] text-fairway-700/70 underline"
               >
                 전체 제거
@@ -182,31 +237,56 @@ export default function VideoUpload({ nickname, onResult }: Props) {
             )}
           </div>
           <p className="mt-0.5 text-[11px] text-fairway-700/70">
-            같은 클럽 · 같은 각도(측면 권장)로 찍은 영상만 섞어주세요.
+            같은 번호의 측면·정면은 동일한 스윙이어야 해요. 한 시점만 있어도 등록할 수 있습니다.
           </p>
-          <input
-            ref={swingsRef}
-            type="file"
-            multiple
-            accept="video/mp4,video/quicktime,video/x-m4v,video/webm,video/*"
-            onChange={(e) => {
-              const files = Array.from(e.target.files ?? []).slice(0, 5);
-              setSwingFiles(files);
-            }}
-            className="mt-2 block w-full text-xs file:mr-2 file:rounded-md file:border-0 file:bg-fairway-500 file:px-3 file:py-1.5 file:text-white hover:file:bg-fairway-600"
-          />
-          {swingFiles.length > 0 && (
-            <ul className="mt-2 space-y-0.5 text-[11px] text-fairway-700/80">
-              {swingFiles.map((f, i) => (
-                <li key={i}>
-                  스윙 {i + 1}: {f.name} ({Math.round((f.size / 1024 / 1024) * 10) / 10}MB)
-                </li>
-              ))}
-            </ul>
-          )}
-          {swingFiles.length === 1 && (
+          <div className="mt-3 space-y-2">
+            {multiSwings.map((swing, index) => (
+              <div key={index} className="rounded-lg border border-fairway-100 bg-fairway-50/50 p-2.5">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-bold text-fairway-900">스윙 {index + 1}</span>
+                  {(swing.side || swing.front) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateMultiFile(index, "side", null);
+                        updateMultiFile(index, "front", null);
+                      }}
+                      className="text-[10px] text-fairway-700/60 underline"
+                    >
+                      비우기
+                    </button>
+                  )}
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {(["side", "front"] as const).map((view) => (
+                    <label key={view} className="block rounded-md border border-fairway-100 bg-white p-2">
+                      <span className="block text-[11px] font-semibold text-fairway-900">
+                        {view === "side" ? "측면 영상" : "정면 영상"}
+                      </span>
+                      <input
+                        key={`${view}-${swing[view]?.name ?? "empty"}-${swing[view]?.lastModified ?? 0}`}
+                        type="file"
+                        accept="video/mp4,video/quicktime,video/x-m4v,video/webm,video/*"
+                        onChange={(e) => updateMultiFile(index, view, e.target.files?.[0] ?? null)}
+                        className="mt-1 block w-full text-[10px] file:mr-1.5 file:rounded file:border-0 file:bg-fairway-500 file:px-2 file:py-1 file:text-white"
+                      />
+                      {swing[view] && (
+                        <span className="mt-1 block truncate text-[10px] text-fairway-700/70">
+                          {swing[view]!.name} · {sizeMB(swing[view]!)}MB
+                        </span>
+                      )}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-[11px] text-fairway-700/70">
+            현재 스윙 {selectedMultiCount}/3 · 측면 {selectedSideCount} · 정면 {selectedFrontCount}
+          </p>
+          {selectedMultiCount === 1 && (
             <p className="mt-1.5 text-[11px] text-amber-700">
-              1개로는 일관성을 판단할 수 없어요. 최소 2개를 선택해 주세요.
+              1개로는 공통 문제의 빈도를 판단할 수 없어요. 스윙을 하나 더 등록해 주세요.
             </p>
           )}
         </div>
@@ -242,15 +322,15 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       <div className="mt-5">
         <label className="block text-sm font-medium text-fairway-900">
           클럽 종류
-          {tab === "session" && (
+          {tab === "multi" && (
             <span className="ml-1.5 rounded bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
               필수
             </span>
           )}
         </label>
         <p className="text-xs text-fairway-700/60">
-          {tab === "session"
-            ? "일관성 분석은 클럽이 섞이면 무의미해요. 어떤 클럽으로 쳤는지 선택하세요."
+          {tab === "multi"
+            ? "멀티샷은 같은 클럽 영상끼리 비교합니다. 어떤 클럽으로 쳤는지 선택하세요."
             : "자동 인식이 어려울 때 직접 지정"}
         </p>
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -287,10 +367,10 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       >
         {busy
           ? "코치가 영상을 보는 중…"
-          : tab === "session"
-            ? swingFiles.length >= 2
-              ? `일관성 분석 시작 (스윙 ${swingFiles.length}개)`
-              : "일관성 분석 시작"
+          : tab === "multi"
+            ? selectedMultiCount >= 2
+              ? `멀티샷 분석 시작 (스윙 ${selectedMultiCount}개)`
+              : "멀티샷 분석 시작"
             : hasFile
               ? `AI 코치에게 보내기 (${[sideFile && "측면", frontFile && "정면"]
                   .filter(Boolean)
@@ -303,13 +383,19 @@ export default function VideoUpload({ nickname, onResult }: Props) {
           {sideFile && (
             <span>
               · 측면샷: {sideFile.name} ({sizeMB(sideFile)}MB){" "}
-              <PoseBadge status={poseStatus.side} />
+              <PoseBadge
+                state={poseState.side}
+                onRetry={() => startPoseExtraction("side", sideFile)}
+              />
             </span>
           )}
           {frontFile && (
             <span>
               · 정면샷: {frontFile.name} ({sizeMB(frontFile)}MB){" "}
-              <PoseBadge status={poseStatus.front} />
+              <PoseBadge
+                state={poseState.front}
+                onRetry={() => startPoseExtraction("front", frontFile)}
+              />
             </span>
           )}
         </div>
@@ -322,8 +408,8 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       )}
       {busy && (
         <div className="mt-3 text-xs leading-relaxed text-fairway-700/70">
-          {tab === "session"
-            ? "스윙별 구간 감지 → 프레임 추출 → 스윙별 독립 채점 → 빈도 집계 → 코치 티칭 순으로 진행돼요. 스윙 수에 따라 1~2분 걸릴 수 있어요."
+          {tab === "multi"
+            ? "스윙별 측면·정면 위상 정렬 → 독립 채점 → 공통 문제와 크리티컬 문제 빈도 집계 → 코치 티칭 순으로 진행돼요. 1~2분 걸릴 수 있어요."
             : "각 영상별 키 프레임 추출 → Gemini 업로드 → 헤드코치 판정 → 전담 코치 분석 → 헤드코치 리뷰. 영상 2개일 경우 1분 정도 걸려요."}
         </div>
       )}
@@ -506,20 +592,45 @@ function FileSlot({
   );
 }
 
-function PoseBadge({ status }: { status: PoseStatus }) {
-  if (status === "idle") return null;
-  const map: Record<Exclude<PoseStatus, "idle">, { label: string; cls: string }> = {
-    extracting: { label: "동작 분석 중…", cls: "bg-sky-100 text-sky-800" },
-    ready: { label: "스켈레톤 분석 준비됨 ✓", cls: "bg-emerald-100 text-emerald-800" },
-    unavailable: {
-      label: "스켈레톤 미지원 (서버 분석으로 진행)",
-      cls: "bg-slate-100 text-slate-600",
-    },
-  };
-  const m = map[status as Exclude<PoseStatus, "idle">];
+function PoseBadge({ state, onRetry }: { state: PoseState; onRetry: () => void }) {
+  if (state.status === "idle") return null;
+
+  if (state.status === "extracting") {
+    return (
+      <span className="ml-1 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-medium text-sky-800">
+        관절 추적 중…
+      </span>
+    );
+  }
+
+  if (state.status === "ready" && state.result) {
+    const { detectedFrames, attemptedFrames, delegate, failure } = state.result;
+    return (
+      <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
+        스켈레톤 준비됨 ✓ · {detectedFrames}/{attemptedFrames}프레임 · {delegate}
+        {failure?.code === "timeout" ? " (부분 결과)" : ""}
+      </span>
+    );
+  }
+
+  const failure = state.result?.failure;
+  const counts = state.result?.attemptedFrames
+    ? ` · ${state.result.detectedFrames}/${state.result.attemptedFrames}프레임`
+    : "";
   return (
-    <span className={`ml-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${m.cls}`}>
-      {m.label}
+    <span className="ml-1 inline-flex flex-wrap items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
+      <span>
+        {failure?.message ?? "관절 추적에 실패했어요."}{counts} · AI 영상 분석은 계속 가능
+      </span>
+      {failure?.retryable !== false && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded bg-white/80 px-1.5 py-0.5 font-semibold underline underline-offset-2"
+        >
+          다시 시도
+        </button>
+      )}
     </span>
   );
 }

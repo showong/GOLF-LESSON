@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 import VideoUpload from "@/components/VideoUpload";
 import AnalysisResult from "@/components/AnalysisResult";
 import ProgressDashboard from "@/components/ProgressDashboard";
+import type { SkeletonSource } from "@/components/SkeletonPhaseStrip";
 
 const NICKNAME_KEY = "golf-tutor:nickname";
 
 export default function HomePage() {
   const [nickname, setNickname] = useState("");
   const [result, setResult] = useState<unknown>(null);
+  const [skeletonSources, setSkeletonSources] = useState<SkeletonSource[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -50,8 +52,9 @@ export default function HomePage() {
 
       <VideoUpload
         nickname={nickname}
-        onResult={(data) => {
+        onResult={(data, sources) => {
           setResult(data);
+          setSkeletonSources(sources);
           setRefreshKey((k) => k + 1);
           // 결과 화면으로 자동 스크롤 (특히 모바일에서 유용)
           requestAnimationFrame(() => {
@@ -66,6 +69,7 @@ export default function HomePage() {
         <div id="analysis-result">
           <AnalysisResult
             data={result as Parameters<typeof AnalysisResult>[0]["data"]}
+            skeletonSources={skeletonSources}
           />
         </div>
       )}

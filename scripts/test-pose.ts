@@ -133,6 +133,27 @@ console.log("\n[3] 스윙 아닌 입력 거부");
   check("정지 영상 → null", detectPhasesFromPose(still) === null);
 }
 
+console.log("\n[3-1] 탑 정지 구간을 어드레스로 오인하지 않음");
+{
+  const base = syntheticSwing();
+  const topPause: PoseTrack = {
+    ...base,
+    frames: base.frames.map((frame) => {
+      if (frame.t < 2.2 || frame.t > 2.45) return frame;
+      const lm = frame.lm.map((point) => [...point] as [number, number, number]);
+      lm[15] = [0.65, 0.25, 0.95];
+      lm[16] = [0.65, 0.25, 0.95];
+      return { ...frame, lm };
+    }),
+  };
+  const phases = detectPhasesFromPose(topPause);
+  check("탑에서 멈춰도 위상 감지 성공", phases !== null, phases);
+  if (phases) {
+    check("어드레스는 탑보다 충분히 앞", phases.top! - phases.address! >= 0.5, phases);
+    check("탑 이후 임팩트 순서 유지", phases.impact! > phases.top!, phases);
+  }
+}
+
 console.log("\n[4] 정량 지표 (상대 단위)");
 {
   const track = syntheticSwing();
