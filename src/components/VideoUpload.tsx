@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { extractPoseTrack } from "@/lib/pose-client";
+import ViewGuideIllustration from "@/components/ViewGuide";
 import type { PoseTrack } from "@/lib/pose";
 
 interface Props {
@@ -299,18 +300,30 @@ function FileSlot({
             }}
           />
         ) : (
-          <div className="flex h-full items-center justify-center px-8 text-center text-[11px] leading-relaxed text-white/70">
-            {view === "side"
-              ? "카메라는 손 높이 · 타깃 라인과 평행 · 전신과 클럽 헤드가 모두 보이게"
-              : "카메라는 가슴 높이 · 몸 정면 · 양발과 클럽 전체가 모두 보이게"}
+          <div className="flex h-full flex-col items-center justify-center gap-1 px-4 py-2">
+            <span className="rounded bg-white/15 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide text-white/90">
+              촬영 각도 예시
+            </span>
+            <div className="min-h-0 w-full flex-1">
+              <ViewGuideIllustration view={view} />
+            </div>
+            <p className="text-center text-[10px] leading-snug text-white/70">
+              {view === "side"
+                ? "옆(뒤쪽)에서 손 높이 · 전신과 클럽 헤드가 모두 보이게"
+                : "정면 가슴 높이 · 양발과 클럽 전체가 모두 보이게"}
+            </p>
           </div>
         )}
-        <div className="pointer-events-none absolute inset-[8%] rounded-lg border border-dashed border-emerald-300/80" />
-        <div className="pointer-events-none absolute bottom-[10%] left-[12%] right-[12%] border-t border-emerald-300/70" />
-        <div className="pointer-events-none absolute bottom-[10%] left-1/2 top-[8%] border-l border-emerald-300/50" />
-        <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
-          머리·발·클럽이 점선 안쪽
-        </span>
+        {previewUrl && (
+          <>
+            <div className="pointer-events-none absolute inset-[8%] rounded-lg border border-dashed border-emerald-300/80" />
+            <div className="pointer-events-none absolute bottom-[10%] left-[12%] right-[12%] border-t border-emerald-300/70" />
+            <div className="pointer-events-none absolute bottom-[10%] left-1/2 top-[8%] border-l border-emerald-300/50" />
+            <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[9px] text-white">
+              머리·발·클럽이 점선 안쪽
+            </span>
+          </>
+        )}
       </div>
 
       {videoInfo && (
