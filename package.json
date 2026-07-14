@@ -11,7 +11,8 @@
     "db:init": "tsx src/lib/db-init.ts",
     "test:grading": "tsx scripts/test-grading.ts",
     "test:pose": "tsx scripts/test-pose.ts",
-    "test": "npm run test:grading && npm run test:pose"
+    "test:session": "tsx scripts/test-session.ts",
+    "test": "npm run test:grading && npm run test:pose && npm run test:session"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

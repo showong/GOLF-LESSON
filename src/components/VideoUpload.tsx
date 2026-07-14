@@ -12,6 +12,7 @@ interface Props {
 
 type ClubHint = "" | "driver" | "iron" | "approach";
 type PoseStatus = "idle" | "extracting" | "ready" | "unavailable";
+type UploadTab = "single" | "session";
 
 export default function VideoUpload({ nickname, onResult }: Props) {
   const sideRef = useRef<HTMLInputElement>(null);
@@ -21,6 +22,9 @@ export default function VideoUpload({ nickname, onResult }: Props) {
   const [clubHint, setClubHint] = useState<ClubHint>("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<UploadTab>("single");
+  const [swingFiles, setSwingFiles] = useState<File[]>([]);
+  const swingsRef = useRef<HTMLInputElement>(null);
 
   // 브라우저 스켈레톤(관절) 추출 — 파일 선택 즉시 백그라운드로 진행.
   // 실패해도 분석은 서버 폴백으로 정상 동작하므로 제출을 막지 않는다.
@@ -56,17 +60,32 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       setError("먼저 닉네임을 입력해 주세요.");
       return;
     }
-    if (!sideFile && !frontFile) {
+    if (tab === "single" && !sideFile && !frontFile) {
       setError("측면샷 또는 정면샷 중 최소 1개는 업로드해 주세요.");
       return;
+    }
+    if (tab === "session") {
+      if (swingFiles.length < 2 || swingFiles.length > 5) {
+        setError("일관성 분석은 같은 클럽 스윙 영상 2~5개가 필요해요.");
+        return;
+      }
+      if (!clubHint) {
+        setError("일관성 분석은 어떤 클럽으로 쳤는지 꼭 선택해 주세요.");
+        return;
+      }
     }
     setError(null);
     setBusy(true);
     try {
       const fd = new FormData();
       fd.append("nickname", nickname.trim());
-      if (sideFile) fd.append("videoSide", sideFile);
-      if (frontFile) fd.append("videoFront", frontFile);
+      if (tab === "session") {
+        for (const f of swingFiles) fd.append("swings", f);
+        fd.append("sessionView", "side");
+      } else {
+        if (sideFile) fd.append("videoSide", sideFile);
+        if (frontFile) fd.append("videoFront", frontFile);
+      }
       if (clubHint) fd.append("clubHint", clubHint);
       // 브라우저에서 추출된 관절 좌표(있을 때만) — 서버 위상 감지·정량 지표에 사용
       if (sideFile && poseRef.current.side) {
@@ -81,8 +100,10 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       onResult(data);
       setSideFile(null);
       setFrontFile(null);
+      setSwingFiles([]);
       if (sideRef.current) sideRef.current.value = "";
       if (frontRef.current) frontRef.current.value = "";
+      if (swingsRef.current) swingsRef.current.value = "";
     } catch (e) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류");
     } finally {
@@ -98,12 +119,100 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       <h2 className="text-base font-semibold text-fairway-900">
         스윙 영상 업로드
       </h2>
-      <p className="mt-1 text-sm text-fairway-700/80">
-        측면샷과 정면샷을 함께 올리면 더 정확해요. 한 시점만 올려도 분석 가능합니다.
-        스마트폰에서는 <strong>카메라로 즉석 촬영</strong>도 됩니다.
+
+      {/* 분석 모드 탭 */}
+      <div className="mt-3 grid grid-cols-2 gap-1 rounded-xl bg-fairway-50 p-1">
+        {(
+          [
+            { value: "single", label: "정밀 분석", sub: "측면+정면 1스윙" },
+            { value: "session", label: "일관성 분석", sub: "같은 클럽 2~5스윙" },
+          ] as { value: UploadTab; label: string; sub: string }[]
+        ).map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            onClick={() => {
+              setTab(t.value);
+              setError(null);
+            }}
+            className={`min-h-[48px] rounded-lg px-3 py-2 text-center transition ${
+              tab === t.value
+                ? "bg-white font-semibold text-fairway-900 shadow-sm"
+                : "text-fairway-700/70"
+            }`}
+          >
+            <span className="block text-sm">{t.label}</span>
+            <span className="block text-[10px] opacity-70">{t.sub}</span>
+          </button>
+        ))}
+      </div>
+
+      <p className="mt-2 text-sm text-fairway-700/80">
+        {tab === "single" ? (
+          <>측면샷과 정면샷을 함께 올리면 더 정확해요. 한 시점만 올려도 분석 가능합니다.
+        스마트폰에서는 <strong>카메라로 즉석 촬영</strong>도 됩니다.</>
+        ) : (
+          <>같은 클럽으로 친 스윙 <strong>2~5개</strong>(측면샷 권장, 같은 각도)를 올리면
+        스윙 간 <strong>일관성 점수</strong>와 함께 문제를 <strong>습관적 / 간헐적 /
+        드물지만 치명적</strong>으로 나눠 진단해 드려요. 한 번의 좋은/나쁜 스윙이
+        등급을 흔들지 않아요.</>
+        )}
       </p>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+      {tab === "session" && (
+        <div className="mt-4 rounded-xl border-2 border-dashed border-fairway-100 p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-semibold text-fairway-900">
+              스윙 영상 여러 개 선택
+              <span className="ml-1.5 rounded bg-fairway-700 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                2~5개
+              </span>
+            </span>
+            {swingFiles.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSwingFiles([]);
+                  if (swingsRef.current) swingsRef.current.value = "";
+                }}
+                className="rounded px-2 py-1 text-[11px] text-fairway-700/70 underline"
+              >
+                전체 제거
+              </button>
+            )}
+          </div>
+          <p className="mt-0.5 text-[11px] text-fairway-700/70">
+            같은 클럽 · 같은 각도(측면 권장)로 찍은 영상만 섞어주세요.
+          </p>
+          <input
+            ref={swingsRef}
+            type="file"
+            multiple
+            accept="video/mp4,video/quicktime,video/x-m4v,video/webm,video/*"
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? []).slice(0, 5);
+              setSwingFiles(files);
+            }}
+            className="mt-2 block w-full text-xs file:mr-2 file:rounded-md file:border-0 file:bg-fairway-500 file:px-3 file:py-1.5 file:text-white hover:file:bg-fairway-600"
+          />
+          {swingFiles.length > 0 && (
+            <ul className="mt-2 space-y-0.5 text-[11px] text-fairway-700/80">
+              {swingFiles.map((f, i) => (
+                <li key={i}>
+                  스윙 {i + 1}: {f.name} ({Math.round((f.size / 1024 / 1024) * 10) / 10}MB)
+                </li>
+              ))}
+            </ul>
+          )}
+          {swingFiles.length === 1 && (
+            <p className="mt-1.5 text-[11px] text-amber-700">
+              1개로는 일관성을 판단할 수 없어요. 최소 2개를 선택해 주세요.
+            </p>
+          )}
+        </div>
+      )}
+
+      <div className={tab === "single" ? "mt-4 grid gap-3 sm:grid-cols-2" : "hidden"}>
         <FileSlot
           inputRef={sideRef}
           file={sideFile}
@@ -133,9 +242,16 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       <div className="mt-5">
         <label className="block text-sm font-medium text-fairway-900">
           클럽 종류
+          {tab === "session" && (
+            <span className="ml-1.5 rounded bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white">
+              필수
+            </span>
+          )}
         </label>
         <p className="text-xs text-fairway-700/60">
-          자동 인식이 어려울 때 직접 지정
+          {tab === "session"
+            ? "일관성 분석은 클럽이 섞이면 무의미해요. 어떤 클럽으로 쳤는지 선택하세요."
+            : "자동 인식이 어려울 때 직접 지정"}
         </p>
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
           {(
@@ -145,7 +261,9 @@ export default function VideoUpload({ nickname, onResult }: Props) {
               { value: "iron", label: "아이언" },
               { value: "approach", label: "어프로치" },
             ] as { value: ClubHint; label: string }[]
-          ).map((opt) => (
+          )
+            .filter((opt) => tab === "single" || opt.value !== "")
+            .map((opt) => (
             <button
               key={opt.value}
               type="button"
@@ -169,14 +287,18 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       >
         {busy
           ? "코치가 영상을 보는 중…"
-          : hasFile
-            ? `AI 코치에게 보내기 (${[sideFile && "측면", frontFile && "정면"]
-                .filter(Boolean)
-                .join("+")})`
-            : "AI 코치에게 보내기"}
+          : tab === "session"
+            ? swingFiles.length >= 2
+              ? `일관성 분석 시작 (스윙 ${swingFiles.length}개)`
+              : "일관성 분석 시작"
+            : hasFile
+              ? `AI 코치에게 보내기 (${[sideFile && "측면", frontFile && "정면"]
+                  .filter(Boolean)
+                  .join("+")})`
+              : "AI 코치에게 보내기"}
       </button>
 
-      {hasFile && (
+      {tab === "single" && hasFile && (
         <div className="mt-3 flex flex-col gap-1 text-xs text-fairway-700/80">
           {sideFile && (
             <span>
@@ -200,8 +322,9 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       )}
       {busy && (
         <div className="mt-3 text-xs leading-relaxed text-fairway-700/70">
-          각 영상별 키 프레임 추출 → Gemini 업로드 → 헤드코치 판정 → 전담 코치
-          분석 → 헤드코치 리뷰. 영상 2개일 경우 1분 정도 걸려요.
+          {tab === "session"
+            ? "스윙별 구간 감지 → 프레임 추출 → 스윙별 독립 채점 → 빈도 집계 → 코치 티칭 순으로 진행돼요. 스윙 수에 따라 1~2분 걸릴 수 있어요."
+            : "각 영상별 키 프레임 추출 → Gemini 업로드 → 헤드코치 판정 → 전담 코치 분석 → 헤드코치 리뷰. 영상 2개일 경우 1분 정도 걸려요."}
         </div>
       )}
     </section>

@@ -11,6 +11,7 @@ import {
   saveAnalysis,
 } from "@/lib/db";
 import {
+  analyzeSwingSession,
   analyzeSwingVideo,
   type AnalyzeVideo,
   type PreviousAnalysisContext,
@@ -57,6 +58,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "닉네임이 필요합니다." }, { status: 400 });
   }
 
+  // === 일관성 분석 모드: "swings" 필드로 같은 클럽 스윙 2~5개 ===
+  const swingFiles = form
+    .getAll("swings")
+    .filter((f): f is File => f instanceof File && f.size > 0);
+  const isSessionMode = swingFiles.length > 0;
+
   // 측면샷(권장)과 정면샷(선택) 둘 다 받음. 둘 다 또는 둘 중 하나.
   // 하위 호환: 단일 "video" 필드만 들어오면 측면샷으로 간주.
   const candidates: { view: VideoView; field: string }[] = [
@@ -78,7 +85,34 @@ export async function POST(req: Request) {
     }
   }
 
-  if (incoming.length === 0) {
+  if (isSessionMode) {
+    if (swingFiles.length < 2 || swingFiles.length > 5) {
+      return NextResponse.json(
+        { error: "일관성 분석은 같은 클럽 스윙 2~5개가 필요합니다." },
+        { status: 400 },
+      );
+    }
+    if (!clubHint) {
+      return NextResponse.json(
+        { error: "일관성 분석은 클럽을 직접 선택해야 합니다. (클럽이 섞이면 공통 문제 분석이 무의미해져요)" },
+        { status: 400 },
+      );
+    }
+    for (const file of swingFiles) {
+      if (!ALLOWED_MIME.has(file.type)) {
+        return NextResponse.json(
+          { error: `지원하지 않는 영상 형식입니다: ${file.type || "unknown"}` },
+          { status: 400 },
+        );
+      }
+      if (file.size > MAX_FILE_BYTES) {
+        return NextResponse.json(
+          { error: `영상이 너무 큽니다(${file.name}, 최대 80MB).` },
+          { status: 413 },
+        );
+      }
+    }
+  } else if (incoming.length === 0) {
     return NextResponse.json(
       { error: "측면샷 또는 정면샷 영상을 최소 1개 첨부해 주세요." },
       { status: 400 },
@@ -106,12 +140,23 @@ export async function POST(req: Request) {
   await fs.mkdir(uploadDir, { recursive: true });
 
   const saved: SavedFile[] = [];
+  const savedSwings: { tmpPath: string; mimeType: string }[] = [];
   try {
-    for (const { view, file } of incoming) {
+    const persist = async (file: File): Promise<string> => {
       const ext = path.extname(file.name) || ".mp4";
       const tmpPath = path.join(uploadDir, `${uuidv4()}${ext}`);
       const buf = Buffer.from(await file.arrayBuffer());
       await fs.writeFile(tmpPath, buf);
+      return tmpPath;
+    };
+    if (isSessionMode) {
+      for (const file of swingFiles) {
+        savedSwings.push({ tmpPath: await persist(file), mimeType: file.type });
+      }
+    }
+    for (const { view, file } of incoming) {
+      if (isSessionMode) break; // 세션 모드는 swings만 사용
+      const tmpPath = await persist(file);
       saved.push({ view, tmpPath, mimeType: file.type });
     }
 
@@ -186,13 +231,27 @@ export async function POST(req: Request) {
       pose: poseFor(s.view),
     }));
 
-    const analysis = await analyzeSwingVideo({
-      nickname: user.nickname,
-      videos,
-      clubHint,
-      history,
-      previousByClub,
-    });
+    const sessionView: VideoView =
+      String(form.get("sessionView") ?? "side") === "front" ? "front" : "side";
+
+    const analysis = isSessionMode
+      ? await analyzeSwingSession({
+          nickname: user.nickname,
+          clubType: clubHint!,
+          view: sessionView,
+          swings: savedSwings.map((s) => ({
+            filePath: s.tmpPath,
+            mimeType: s.mimeType,
+          })),
+          previousByClub,
+        })
+      : await analyzeSwingVideo({
+          nickname: user.nickname,
+          videos,
+          clubHint,
+          history,
+          previousByClub,
+        });
 
     // 추천 영상 검색 (실패해도 분석 결과는 그대로 전달)
     try {
@@ -258,8 +317,9 @@ export async function POST(req: Request) {
       err instanceof Error ? err.message : "분석 중 알 수 없는 오류가 발생했습니다.";
     return NextResponse.json({ error: message }, { status: 500 });
   } finally {
-    await Promise.all(
-      saved.map((s) => fs.unlink(s.tmpPath).catch(() => {})),
-    );
+    await Promise.all([
+      ...saved.map((s) => fs.unlink(s.tmpPath).catch(() => {})),
+      ...savedSwings.map((s) => fs.unlink(s.tmpPath).catch(() => {})),
+    ]);
   }
 }

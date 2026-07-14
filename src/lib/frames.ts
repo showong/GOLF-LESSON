@@ -272,16 +272,29 @@ export type PhaseTimestamps = Partial<Record<SwingPhase, number>>;
  * timestamps가 주어지면 해당 위상의 실제 타임스탬프를 사용하고 (2-pass 정밀 추출),
  * 없으면 영상 길이의 10/30/50/70/90% 지점으로 폴백한다.
  */
+export interface ExtractOptions {
+  /** 임팩트 전후 버스트 프레임 추출 여부 (기본 true) */
+  impactBurst?: boolean;
+  /** 추출할 위상 서브셋 (기본: 5개 전부). 세션 모드는 3개로 비용 절감 */
+  phases?: SwingPhase[];
+  /** 라벨 접두어 (예: "스윙 2") — 세션 모드에서 스윙 구분용 */
+  labelPrefix?: string;
+}
+
 export async function extractKeyFrames(
   videoPath: string,
   view: VideoView,
   timestamps?: PhaseTimestamps,
+  options?: ExtractOptions,
 ): Promise<ExtractedFrame[]> {
   const metadata = await inspectVideoMetadata(videoPath);
   const duration = metadata.durationSec;
   const fps = Math.max(1, metadata.fps);
   const tmpDir = path.join(os.tmpdir(), `gtutor-frames-${uuidv4()}`);
   await fs.mkdir(tmpDir, { recursive: true });
+  const wantBurst = options?.impactBurst !== false;
+  const phaseFilter = options?.phases;
+  const prefix = options?.labelPrefix ? `${options.labelPrefix} ` : "";
 
   const clamp = (t: number) =>
     Math.max(0, Math.min(Math.max(0, duration - 0.05), t));
@@ -291,6 +304,7 @@ export async function extractKeyFrames(
     const frames: ExtractedFrame[] = [];
     for (let i = 0; i < PHASES.length; i++) {
       const { ratio, phase, label } = PHASES[i];
+      if (phaseFilter && !phaseFilter.includes(phase)) continue;
       const detected = timestamps?.[phase];
       const usedDetected =
         typeof detected === "number" && Number.isFinite(detected) && detected >= 0;
@@ -302,7 +316,7 @@ export async function extractKeyFrames(
       const data = await fs.readFile(out);
       frames.push({
         view,
-        label: `${viewLabel} ${i + 1}/${PHASES.length} ${label} (t=${ts.toFixed(2)}s${usedDetected ? ", 위상 감지" : ""})`,
+        label: `${prefix}${viewLabel} ${label} (t=${ts.toFixed(2)}s${usedDetected ? ", 위상 감지" : ""})`,
         phase,
         timestampSec: ts,
         base64: data.toString("base64"),
@@ -313,7 +327,7 @@ export async function extractKeyFrames(
       // 임팩트는 단일 프레임 대신 전후 2프레임을 추가해 손-헤드 관계와
       // 자세 변화가 타임스탬프 오차에 좌우되지 않도록 한다.
       // (±3 → ±2 축소: 인접 프레임은 거의 동일 이미지라 한계효용 낮고 토큰 비용만 큼)
-      if (phase === "impact") {
+      if (phase === "impact" && wantBurst) {
         for (const offset of [-2, -1, 1, 2]) {
           const burstTs = clamp(ts + offset / fps);
           const burstOut = path.join(tmpDir, `f${i}-impact-${offset}.jpg`);
@@ -321,7 +335,7 @@ export async function extractKeyFrames(
           const burstData = await fs.readFile(burstOut);
           frames.push({
             view,
-            label: `${viewLabel} 임팩트 ${offset > 0 ? "+" : ""}${offset}프레임 (t=${burstTs.toFixed(3)}s)`,
+            label: `${prefix}${viewLabel} 임팩트 ${offset > 0 ? "+" : ""}${offset}프레임 (t=${burstTs.toFixed(3)}s)`,
             phase: "impact",
             timestampSec: burstTs,
             base64: burstData.toString("base64"),

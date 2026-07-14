@@ -85,6 +85,32 @@ export interface SwingPoint {
   evidence?: string;
   /** 드릴 전용: 감별 트리의 서브타입명 (예: "시퀀스형"). 감별 불필요 시 "일반" */
   targetSubtype?: string;
+  /** 일관성 분석 전용: 이 문제의 발생 빈도 분류 */
+  frequency?: "habitual" | "intermittent" | "rare-critical";
+}
+
+export const FREQUENCY_LABEL: Record<
+  NonNullable<SwingPoint["frequency"]>,
+  string
+> = {
+  habitual: "습관적 (대부분의 스윙)",
+  intermittent: "간헐적 (일부 스윙)",
+  "rare-critical": "드물지만 치명적",
+};
+
+/** 복수 스윙 일관성 분석 세션 요약 */
+export interface SwingSessionInfo {
+  swingCount: number;
+  /** 스윙 간 반복성 0~100. 항목별 점수 편차 기반, 서버에서 결정적으로 계산 */
+  consistencyScore: number;
+  /** 스윙별 가중 점수 (미니 차트용) */
+  perSwingWeighted: number[];
+  /** 빈도 분류된 결함 (title은 스윙 간 동일 문자열 재사용 규칙으로 집계) */
+  habitualFaults: { title: string; count: number }[];
+  intermittentFaults: { title: string; count: number }[];
+  rareCriticalFaults: { title: string; count: number }[];
+  /** 힌트 클럽과 다른 클럽으로 보이는 스윙 번호(1-base) */
+  mismatchedSwings?: number[];
 }
 
 export interface SwingFocus {
@@ -194,6 +220,8 @@ export interface SwingAnalysis {
   review: ReviewResult;
   /** 약점/포커스 키워드 기반 YouTube 추천 영상 (화이트리스트 우선) */
   recommendations?: VideoRecommendation[];
+  /** 복수 스윙 일관성 분석일 때만 존재 */
+  session?: SwingSessionInfo;
 }
 
 export interface AnalysisRecord {

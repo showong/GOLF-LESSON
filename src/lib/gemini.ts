@@ -24,6 +24,10 @@ import {
   type PoseTrack,
 } from "./pose";
 import {
+  aggregateSession,
+  type PerSwingJudgement,
+} from "./session";
+import {
   BODY_REGION_LABEL,
   CLUB_LABEL,
   GRADE_LABEL,
@@ -859,16 +863,22 @@ function normalizePoints(raw: unknown): SwingPoint[] {
         emphasis?: unknown;
         evidence?: unknown;
         targetSubtype?: unknown;
+        frequency?: unknown;
       };
       const emphasis: "key" | "normal" = r.emphasis === "key" ? "key" : "normal";
       const evidence = String(r.evidence ?? "").trim();
       const targetSubtype = String(r.targetSubtype ?? "").trim();
+      const freqValues = ["habitual", "intermittent", "rare-critical"] as const;
+      const frequency = freqValues.includes(r.frequency as (typeof freqValues)[number])
+        ? (r.frequency as SwingPoint["frequency"])
+        : undefined;
       return {
         title: String(r.title ?? "").trim(),
         detail: String(r.detail ?? "").trim(),
         emphasis,
         ...(evidence ? { evidence } : {}),
         ...(targetSubtype ? { targetSubtype } : {}),
+        ...(frequency ? { frequency } : {}),
       };
     })
     .filter((p) => p.title || p.detail);
@@ -964,13 +974,13 @@ export interface AnalyzeInput {
   previousByClub?: Partial<Record<ClubType, PreviousAnalysisContext>>;
 }
 
-function makeModel(systemInstruction: string) {
+function makeModel(systemInstruction: string, maxOutputTokens = 4096) {
   const genAI = new GoogleGenerativeAI(apiKey());
   const generationConfig: GenerationConfig = {
     responseMimeType: "application/json",
     temperature: 0.1,
     topP: 0.1,
-    maxOutputTokens: 4096,
+    maxOutputTokens,
   };
   return genAI.getGenerativeModel({
     model: MODEL,
@@ -1770,4 +1780,300 @@ async function runReview(
     ],
   });
   return normalizeReview(parseJson(result.response.text()), attempt);
+}
+
+// ---------- 일관성 분석 (복수 스윙 세션) ----------
+
+export interface SessionInput {
+  nickname: string;
+  clubType: ClubType;
+  view: VideoView;
+  /** 같은 클럽으로 친 스윙 영상 2~5개 */
+  swings: { filePath: string; mimeType: string }[];
+  previousByClub?: Partial<Record<ClubType, PreviousAnalysisContext>>;
+}
+
+const SESSION_JUDGE_PROMPT = `당신은 ${HEAD_COACH.name}입니다. ${HEAD_COACH.voiceGuide}
+
+[임무 — 복수 스윙 일관성 판정]
+같은 골퍼가 같은 클럽으로 친 스윙 여러 개의 정지 프레임(스윙별 어드레스/탑/임팩트)이
+제공됩니다. 각 스윙을 **독립적으로** 채점하고 결함을 기록하세요.
+어떤 결함이 습관인지/우연인지는 서버가 빈도로 계산하므로 판단하지 마세요.
+
+[채점 — 스윙마다 8항목]
+${RUBRIC}
+
+[결함 기록 규칙 — 매우 중요]
+- 각 스윙에서 관찰된 결함을 faults 배열에 기록.
+- **같은 결함은 모든 스윙에서 정확히 동일한 title 문자열을 재사용**하세요.
+  (서버가 title 완전 일치로 빈도를 집계합니다. 표현을 바꾸면 집계가 깨집니다.)
+- title은 15자 내외의 짧은 한국어 (예: "팔이 먼저 내려오는 전환", "임팩트 직전 헤드업").
+- severity: "major"(구질에 직접 영향) | "minor"(미세 편차).
+- 스윙 간 차이를 적극적으로 보세요. 같은 사람이라도 스윙마다 다릅니다.
+
+[클럽 확인]
+- 사용자가 지정한 클럽과 명백히 다른 클럽으로 보이는 스윙은 clubMatches=false.
+
+[관찰 불가 규칙]
+- 스윙별로 안 보이는 항목은 score=null, observable=false, confidence=0.
+- 관찰 불가를 낮은 실력으로 간주 금지.
+
+[출력 JSON — 이 형식만, 코드펜스 금지]
+{
+  "perSwing": [
+    {
+      "swing": 1,
+      "clubMatches": boolean,
+      "scores": [
+        { "dim": "address", "score": 0|1|2|3|null, "observable": boolean, "confidence": 0-1 },
+        ... 8개 항목 전부 (note 생략 가능) ...
+      ],
+      "faults": [{ "title": string, "severity": "major"|"minor" }, ...0~4개]
+    },
+    ... 스윙 수만큼 ...
+  ],
+  "sessionNote": string  // 스윙 간 눈에 띄는 차이 1~2문장
+}`;
+
+function normalizePerSwing(raw: unknown, swingCount: number): PerSwingJudgement[] {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const arr = Array.isArray(obj.perSwing) ? obj.perSwing : [];
+  const out: PerSwingJudgement[] = [];
+  for (let i = 0; i < swingCount; i++) {
+    const r = (arr[i] ?? {}) as Record<string, unknown>;
+    const faultsRaw = Array.isArray(r.faults) ? r.faults : [];
+    out.push({
+      swing: i + 1,
+      clubMatches: r.clubMatches !== false,
+      scores: normalizeMechanics(r.scores),
+      faults: faultsRaw
+        .map((f) => {
+          const ff = f as { title?: unknown; severity?: unknown };
+          return {
+            title: String(ff.title ?? "").trim(),
+            severity: ff.severity === "major" ? ("major" as const) : ("minor" as const),
+          };
+        })
+        .filter((f) => f.title)
+        .slice(0, 6),
+    });
+  }
+  return out;
+}
+
+/**
+ * 복수 스윙 일관성 분석.
+ * 스윙별 관찰·채점(LLM) → 서버 집계(중앙값·일관성·빈도 분류) → 코치 티칭 → 리뷰.
+ */
+export async function analyzeSwingSession(
+  input: SessionInput,
+): Promise<SwingAnalysis> {
+  const n = input.swings.length;
+  if (n < 2 || n > 5) {
+    throw new Error("일관성 분석은 같은 클럽 스윙 2~5개가 필요합니다.");
+  }
+  for (const s of input.swings) {
+    if (!fs.existsSync(s.filePath)) {
+      throw new Error(`업로드된 파일을 찾을 수 없습니다: ${s.filePath}`);
+    }
+  }
+
+  // 품질 사전 검사 (판독 불가 파일만 차단)
+  const metadatas = await Promise.all(
+    input.swings.map((s) => inspectVideoMetadata(s.filePath)),
+  );
+  const videoQuality: VideoQualityReport[] = metadatas.map((m) =>
+    technicalQualityReport(input.view, m),
+  );
+  const rejected = videoQuality.findIndex((q) => !q.passed);
+  if (rejected >= 0) {
+    throw new Error(
+      `스윙 ${rejected + 1} 영상 품질을 확인해 주세요: ${videoQuality[rejected].warnings.join(" · ") || "해상도 또는 길이가 분석 기준에 미달"}`,
+    );
+  }
+
+  const fileManager = new GoogleAIFileManager(apiKey());
+
+  // 스윙별: 모션 분석(결정적) → 프레임 3장(어드레스/탑/임팩트, 버스트 없음)
+  // 세션 모드는 LLM 위상 감지를 생략해 비용을 스윙 수와 무관하게 유지한다.
+  const frameSets = await Promise.all(
+    input.swings.map(async (s, i) => {
+      const motion = await analyzeMotion(s.filePath).catch(() => null);
+      const timestamps = motion ? motionToTimestamps(motion) : undefined;
+      return extractKeyFrames(s.filePath, input.view, timestamps, {
+        impactBurst: false,
+        phases: ["address", "top", "impact"],
+        labelPrefix: `[스윙 ${i + 1}]`,
+      }).catch((e: unknown) => {
+        console.warn(`세션 프레임 추출 실패 (스윙 ${i + 1}):`, e);
+        return [] as ExtractedFrame[];
+      });
+    }),
+  );
+  if (frameSets.every((f) => f.length === 0)) {
+    throw new Error("스윙 프레임을 추출하지 못했습니다.");
+  }
+
+  // === 세션 판정 (1회 호출, 스윙별 독립 채점) ===
+  const judgeModel = makeModel(SESSION_JUDGE_PROMPT, 8192);
+  const judgeParts: Content["parts"] = [
+    {
+      text: `[세션 정보] 사용자 지정 클럽: ${CLUB_LABEL[input.clubType]} · 시점: ${VIDEO_VIEW_LABEL[input.view]} · 스윙 ${n}개\n스윙별 프레임이 아래에 순서대로 옵니다. perSwing은 반드시 ${n}개.`,
+    },
+  ];
+  frameSets.forEach((frames, i) => {
+    judgeParts.push({ text: `\n=== 스윙 ${i + 1} ===` });
+    for (const f of frames) {
+      judgeParts.push({ text: `- ${f.label}` });
+      judgeParts.push({ inlineData: { mimeType: f.mimeType, data: f.base64 } });
+    }
+  });
+  judgeParts.push({ text: "\n모든 스윙을 독립 채점해 JSON만 출력하세요." });
+  const judgeResult = await judgeModel.generateContent({
+    contents: [{ role: "user", parts: judgeParts }],
+  });
+  const judgeRaw = parseJson(judgeResult.response.text()) as Record<string, unknown>;
+  const perSwing = normalizePerSwing(judgeRaw, n);
+  const sessionNote = String(judgeRaw.sessionNote ?? "").trim();
+
+  // === 서버 집계 (결정적) ===
+  const agg = aggregateSession(perSwing);
+  const {
+    grade,
+    level,
+    total: mechanicsTotal,
+    weighted: mechanicsWeighted,
+    gateNote,
+    observedCount,
+    averageConfidence,
+    coverageCapped,
+  } = scoreToGradeLevel(agg.medianScores);
+  const coach = COACHES[grade];
+
+  const judgement: HeadJudgement = {
+    clubType: input.clubType,
+    clubConfidence: 1,
+    clubCues: ["사용자가 직접 지정함"],
+    mechanicsScores: agg.medianScores,
+    gradeRationale: `스윙 ${n}개 중앙값 기준 판정. 일관성 ${agg.consistencyScore}/100. ${sessionNote}`.trim(),
+  };
+
+  // === 코치 티칭 (텍스트 전용 — 판정 결과가 충분히 풍부) ===
+  const previous = input.previousByClub?.[input.clubType];
+  const sessionBlock = `
+[일관성 분석 세션 — 이 정보를 반드시 활용하세요]
+- 스윙 수: ${n}개 · 일관성 점수: ${agg.consistencyScore}/100
+  (80↑ 반복성 좋음 / 50~79 보통 / 50 미만이면 "일관성 자체"가 최우선 과제)
+- 습관적 문제 (스윙 60%↑에서 발생 — 교정 1순위):
+${agg.habitualFaults.map((f) => `  · ${f.title} (${f.count}/${n}회)`).join("\n") || "  (없음)"}
+- 간헐적 문제 (일부 스윙에서만):
+${agg.intermittentFaults.map((f) => `  · ${f.title} (${f.count}/${n}회)`).join("\n") || "  (없음)"}
+- 드물지만 치명적 (1회지만 구질에 직접 영향):
+${agg.rareCriticalFaults.map((f) => `  · ${f.title}`).join("\n") || "  (없음)"}
+${agg.mismatchedSwings.length > 0 ? `- 주의: 스윙 ${agg.mismatchedSwings.join(", ")}번은 지정 클럽과 달라 보임 (사용자에게 알릴 것)` : ""}
+
+[세션 모드 티칭 규칙]
+- topFocus는 습관적 문제에서 선정 (습관이 없으면 일관성 자체 또는 간헐 문제).
+- weaknesses의 각 항목에 frequency 필드 필수:
+  "habitual" | "intermittent" | "rare-critical"
+- evidence에는 발생 횟수를 포함 (예: "5개 스윙 중 4개에서 관찰").
+- coachMessage에서 "우연이 아니라 N번 중 M번 반복된 패턴"임을 언급해
+  진단의 신뢰를 보여주세요. 일관성 점수도 자연스럽게 언급.`;
+
+  let coachOutput: CoachOutput | null = null;
+  let review: ReviewResult | null = null;
+  let retryFeedback = "";
+  for (let attempt = 1; attempt <= MAX_REVIEW_ATTEMPTS; attempt++) {
+    const coachModel = makeModel(
+      buildCoachPrompt(coach, judgement, grade, level, [], previous) + sessionBlock,
+    );
+    const coachParts: Content["parts"] = [];
+    if (attempt > 1 && retryFeedback) {
+      coachParts.push({
+        text: `[헤드코치 재작성 요청 — 시도 ${attempt}/${MAX_REVIEW_ATTEMPTS}]\n${retryFeedback}`,
+      });
+    }
+    coachParts.push({
+      text: "위 세션 판정을 바탕으로 코치 출력 JSON만 작성하세요. weaknesses에는 frequency 필드를 포함하세요.",
+    });
+    const coachResult = await coachModel.generateContent({
+      contents: [{ role: "user", parts: coachParts }],
+    });
+    coachOutput = normalizeCoachOutput(parseJson(coachResult.response.text()));
+    review = await runReview(coach, judgement, grade, level, coachOutput, attempt);
+    if (review.passed) break;
+    retryFeedback = review.feedback;
+  }
+  if (!coachOutput || !review) {
+    throw new Error("코치 분석을 생성하지 못했습니다.");
+  }
+
+  // 빈도 태그 보정: 코치가 누락하면 서버 집계 기준으로 채움
+  const freqOf = (title: string): SwingPoint["frequency"] | undefined => {
+    if (agg.habitualFaults.some((f) => title.includes(f.title) || f.title.includes(title)))
+      return "habitual";
+    if (agg.intermittentFaults.some((f) => title.includes(f.title) || f.title.includes(title)))
+      return "intermittent";
+    if (agg.rareCriticalFaults.some((f) => title.includes(f.title) || f.title.includes(title)))
+      return "rare-critical";
+    return undefined;
+  };
+  coachOutput.weaknesses = coachOutput.weaknesses.map((w) => ({
+    ...w,
+    frequency: w.frequency ?? freqOf(w.title),
+  }));
+
+  const rationale = [judgement.gradeRationale, gateNote ?? ""].filter(Boolean).join(" / ");
+
+  const provisionalReasons: string[] = [];
+  if (observedCount < MECHANICS_DIMENSIONS.length || averageConfidence < 0.65) {
+    provisionalReasons.push(
+      `판독 범위 ${observedCount}/8 · 평균 신뢰도 ${Math.round(averageConfidence * 100)}%`,
+    );
+  }
+  const qualityWarnings = Array.from(new Set(videoQuality.flatMap((q) => q.warnings)));
+  if (qualityWarnings.length > 0) {
+    provisionalReasons.push(qualityWarnings.slice(0, 2).join(" · "));
+  }
+
+  return {
+    views: [input.view],
+    clubType: input.clubType,
+    clubConfidence: 1,
+    clubCues: ["사용자가 직접 지정함"],
+    grade,
+    level,
+    gradeRationale: rationale,
+    mechanicsScores: agg.medianScores,
+    mechanicsTotal,
+    mechanicsWeighted,
+    mechanicsCoverage: {
+      observed: observedCount,
+      total: MECHANICS_DIMENSIONS.length,
+      averageConfidence,
+      capped: coverageCapped,
+    },
+    videoQuality,
+    homeworkCheck: coachOutput.homeworkCheck ?? null,
+    provisional: provisionalReasons.length > 0 || undefined,
+    provisionalReason:
+      provisionalReasons.length > 0 ? provisionalReasons.join(" · ") : undefined,
+    topFocus: coachOutput.topFocus,
+    strengths: coachOutput.strengths,
+    weaknesses: coachOutput.weaknesses,
+    drills: coachOutput.drills,
+    coachMessage: coachOutput.coachMessage,
+    oneLineSummary: coachOutput.oneLineSummary,
+    review,
+    session: {
+      swingCount: n,
+      consistencyScore: agg.consistencyScore,
+      perSwingWeighted: agg.perSwingWeighted,
+      habitualFaults: agg.habitualFaults,
+      intermittentFaults: agg.intermittentFaults,
+      rareCriticalFaults: agg.rareCriticalFaults,
+      mismatchedSwings:
+        agg.mismatchedSwings.length > 0 ? agg.mismatchedSwings : undefined,
+    },
+  };
 }

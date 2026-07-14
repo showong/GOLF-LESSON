@@ -23,14 +23,38 @@ function CameraGlyph({ x, y, angle = 0 }: { x: number; y: number; angle?: number
   );
 }
 
-/** 측면샷: 골퍼를 옆에서 — 카메라는 골퍼 뒤쪽 손 높이, 볼 궤적이 타깃(스크린) 방향 */
+/**
+ * 측면샷: 실제 스크린골프 구도 반영 —
+ * 골퍼 뒤쪽 손 높이에서 촬영, 골퍼 앞에 시뮬레이터 스크린이 보이고
+ * 볼 비행이 스크린 속으로 향한다. (사용자 실영상 구도 기준으로 재작성)
+ */
 export function SideViewGuide() {
   return (
     <svg viewBox="0 0 200 120" className="h-full w-full" aria-label="측면샷 촬영 예시">
       {/* 바닥 */}
       <line x1={14} y1={100} x2={186} y2={100} stroke={STROKE} strokeWidth={1} opacity={0.35} />
 
-      {/* 골퍼 (옆모습, 어드레스) — 곡선 실루엣 */}
+      {/* 시뮬레이터 스크린 (지평선 + 깃발) */}
+      <g opacity={0.85}>
+        <rect
+          x={16}
+          y={18}
+          width={58}
+          height={42}
+          rx={3}
+          fill="rgba(52,211,153,0.07)"
+          stroke={STROKE}
+          strokeWidth={1.2}
+        />
+        <line x1={20} y1={48} x2={70} y2={48} stroke={STROKE} strokeWidth={0.8} opacity={0.5} />
+        <line x1={56} y1={48} x2={56} y2={32} stroke={STROKE} strokeWidth={0.8} opacity={0.7} />
+        <path d="M 56 32 L 63 35 L 56 38" fill="none" stroke={STROKE} strokeWidth={0.8} opacity={0.7} />
+      </g>
+      <text x={45} y={13} fontSize={7.5} fill={STROKE} textAnchor="middle" opacity={0.9}>
+        스크린(타깃)
+      </text>
+
+      {/* 골퍼 (스크린을 향해 어드레스) — 곡선 실루엣 */}
       <g
         stroke={STROKE}
         strokeWidth={2}
@@ -40,34 +64,31 @@ export function SideViewGuide() {
         opacity={0.9}
       >
         {/* 머리 */}
-        <circle cx={127} cy={36} r={7} />
+        <circle cx={130} cy={38} r={7} />
         {/* 척추 (앞으로 숙임) */}
-        <path d="M 125 43 Q 122 52 118 62" />
+        <path d="M 128 45 Q 125 54 121 64" />
         {/* 팔 → 손 */}
-        <path d="M 123 46 Q 112 52 104 60" />
+        <path d="M 126 48 Q 116 54 108 62" />
         {/* 다리 (무릎 굽힘) */}
-        <path d="M 118 62 Q 120 80 116 99" />
-        <path d="M 118 62 Q 126 80 123 99" />
+        <path d="M 121 64 Q 123 82 119 99" />
+        <path d="M 121 64 Q 129 81 126 99" />
         {/* 클럽 샤프트 + 헤드 */}
-        <path d="M 104 60 L 90 93" strokeWidth={1.8} />
-        <path d="M 90 93 Q 88 97 82 96" strokeWidth={2.2} />
+        <path d="M 108 62 L 97 92" strokeWidth={1.8} />
+        <path d="M 97 92 Q 95 96 89 95" strokeWidth={2.2} />
       </g>
       {/* 볼 */}
-      <circle cx={77} cy={97} r={3} fill={BALL} />
+      <circle cx={85} cy={96} r={3} fill={BALL} />
 
-      {/* 타깃(스크린) 방향 — 볼 비행 궤적 */}
+      {/* 볼 비행: 스크린 속으로 */}
       <g stroke={ACCENT} strokeWidth={1.3} fill="none" opacity={0.9}>
-        <path d="M 72 94 Q 52 84 32 79" strokeDasharray="4 3" />
-        <path d="M 39 76 L 31 79 L 37 84" />
+        <path d="M 80 92 Q 66 74 54 58" strokeDasharray="4 3" />
+        <path d="M 60 60 L 53 56 L 55 64" />
       </g>
-      <text x={30} y={70} fontSize={7.5} fill={ACCENT} opacity={0.95}>
-        타깃(스크린) 방향
-      </text>
 
       {/* 카메라 위치: 골퍼 뒤쪽, 손 높이 */}
-      <CameraGlyph x={172} y={58} angle={180} />
-      <line x1={158} y1={58} x2={140} y2={56} stroke={ACCENT} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
-      <text x={150} y={46} fontSize={7.5} fill={ACCENT} textAnchor="middle" opacity={0.95}>
+      <CameraGlyph x={174} y={58} angle={180} />
+      <line x1={160} y1={58} x2={144} y2={56} stroke={ACCENT} strokeWidth={1} strokeDasharray="3 3" opacity={0.7} />
+      <text x={158} y={46} fontSize={7.5} fill={ACCENT} textAnchor="middle" opacity={0.95}>
         여기서 촬영
       </text>
     </svg>

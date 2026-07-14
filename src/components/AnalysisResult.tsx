@@ -2,6 +2,7 @@
 
 import type { CoachPersona } from "@/lib/coaches";
 import {
+  FREQUENCY_LABEL,
   MECHANICS_LABEL,
   type AnalysisRecord,
   type Grade,
@@ -119,6 +120,19 @@ function PointList({
                     <span className={`mt-1 shrink-0 text-xs ${s.bullet}`}>•</span>
                   )}
                   <div className="text-sm leading-relaxed">
+                    {p.frequency && (
+                      <span
+                        className={`mr-1.5 inline-block rounded px-1.5 py-0.5 align-middle text-[10px] font-bold ${
+                          p.frequency === "habitual"
+                            ? "bg-rose-600 text-white"
+                            : p.frequency === "intermittent"
+                              ? "bg-amber-500 text-white"
+                              : "bg-violet-600 text-white"
+                        }`}
+                      >
+                        {FREQUENCY_LABEL[p.frequency].split(" ")[0]}
+                      </span>
+                    )}
                     <span
                       className={
                         isKey
@@ -251,6 +265,8 @@ export default function AnalysisResult({ data }: Props) {
       {a.homeworkCheck && (
         <HomeworkCard homework={a.homeworkCheck} coachName={coach.name} />
       )}
+
+      {a.session && <SessionCard session={a.session} />}
 
       <ClubObservationCard
         observations={a.clubObservations}
@@ -838,6 +854,128 @@ function HomeworkCard({
           <span className="ml-1 text-xs text-fairway-700/60">— {coachName}</span>
         </p>
       )}
+    </div>
+  );
+}
+
+function SessionCard({
+  session,
+}: {
+  session: NonNullable<AnalysisRecord["analysis"]["session"]>;
+}) {
+  const score = session.consistencyScore;
+  const tone =
+    score >= 80
+      ? { label: "반복성 좋음", bar: "bg-emerald-500", text: "text-emerald-700" }
+      : score >= 50
+        ? { label: "보통", bar: "bg-amber-500", text: "text-amber-700" }
+        : { label: "일관성이 최우선 과제", bar: "bg-rose-500", text: "text-rose-700" };
+  const maxW = Math.max(...session.perSwingWeighted, 1);
+
+  const FaultGroup = ({
+    title,
+    faults,
+    badge,
+    desc,
+  }: {
+    title: string;
+    faults: { title: string; count: number }[];
+    badge: string;
+    desc: string;
+  }) => (
+    <div className="rounded-lg border border-fairway-100 p-3">
+      <div className="flex items-center gap-1.5">
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${badge}`}>
+          {title}
+        </span>
+        <span className="text-[10px] text-fairway-700/60">{desc}</span>
+      </div>
+      {faults.length === 0 ? (
+        <p className="mt-1.5 text-xs text-fairway-700/60">발견되지 않음 ✓</p>
+      ) : (
+        <ul className="mt-1.5 space-y-1">
+          {faults.map((f, i) => (
+            <li key={i} className="text-xs text-fairway-900">
+              · {f.title}
+              <span className="ml-1 text-fairway-700/60">
+                ({f.count}/{session.swingCount}회)
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="rounded-2xl border border-fairway-100 bg-white p-4 shadow-sm sm:p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold text-fairway-900">
+          🔁 스윙 일관성 분석 (스윙 {session.swingCount}개)
+        </h3>
+        <span className={`text-sm font-bold ${tone.text}`}>
+          {score}/100 · {tone.label}
+        </span>
+      </div>
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-fairway-100">
+        <div className={`h-full ${tone.bar}`} style={{ width: `${score}%` }} />
+      </div>
+      <p className="mt-1 text-[11px] text-fairway-700/70">
+        스윙 간 항목별 점수 편차 기반. 등급은 스윙 {session.swingCount}개의
+        중앙값으로 판정되어 한 번의 좋은/나쁜 스윙에 흔들리지 않아요.
+      </p>
+
+      {/* 스윙별 가중 점수 미니 바 */}
+      <div className="mt-3 flex items-end gap-1.5">
+        {session.perSwingWeighted.map((w, i) => (
+          <div key={i} className="flex flex-col items-center gap-0.5">
+            <div
+              className="w-7 rounded-t bg-fairway-500/70"
+              style={{ height: `${Math.max(6, (w / Math.max(30, maxW)) * 48)}px` }}
+              title={`스윙 ${i + 1}: ${w}/30`}
+            />
+            <span
+              className={`text-[9px] ${
+                session.mismatchedSwings?.includes(i + 1)
+                  ? "font-bold text-rose-600"
+                  : "text-fairway-700/60"
+              }`}
+            >
+              {i + 1}
+            </span>
+          </div>
+        ))}
+        <span className="ml-1 self-center text-[10px] text-fairway-700/50">
+          스윙별 가중 점수
+        </span>
+      </div>
+      {session.mismatchedSwings && session.mismatchedSwings.length > 0 && (
+        <p className="mt-1.5 rounded bg-rose-50 px-2 py-1 text-[11px] text-rose-700">
+          ⚠️ 스윙 {session.mismatchedSwings.join(", ")}번은 선택한 클럽과 달라
+          보여요. 같은 클럽 영상만 모아 다시 분석하면 더 정확해요.
+        </p>
+      )}
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <FaultGroup
+          title="습관적"
+          badge="bg-rose-600"
+          desc="스윙 60%↑ · 교정 1순위"
+          faults={session.habitualFaults}
+        />
+        <FaultGroup
+          title="간헐적"
+          badge="bg-amber-500"
+          desc="일부 스윙에서만"
+          faults={session.intermittentFaults}
+        />
+        <FaultGroup
+          title="드물지만 치명적"
+          badge="bg-violet-600"
+          desc="1회지만 구질에 직접 영향"
+          faults={session.rareCriticalFaults}
+        />
+      </div>
     </div>
   );
 }
