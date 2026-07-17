@@ -20,7 +20,7 @@
   4단계 × LV-1~LV-3을 부여.
 - 🧑‍🏫 **등급별 전담 코치**: 골린이는 다정한 김다정 코치, 프로는 절제된 한지호 코치 등
   등급에 맞는 어휘와 톤으로 코멘트.
-- 🧠 **메모리(이전 기록) 반영**: 같은 닉네임의 직전 분석 요약을 컨텍스트로 넣어
+- 🧠 **메모리(이전 기록) 반영**: 서명된 사용자 ID의 직전 분석 요약을 컨텍스트로 넣어
   변화 추이(▲상승/▼하락/=유지)를 표시.
 - 📋 **숙제 검사 루프**: 지난 분석의 #1 포커스를 코치가 기억하고, 다음 분석에서
   개선 여부(좋아짐/비슷함/후퇴)를 직접 판정해 알려줌.
@@ -54,14 +54,16 @@
 
 ## 기술 스택
 
-- **프레임워크**: Next.js 14 (App Router) + TypeScript + Tailwind CSS
-- **AI**: Google Gemini 3.1 (`@google/generative-ai`) — File API로 영상 업로드
+- **프레임워크**: Next.js 16 (App Router) + React 19 + TypeScript + Tailwind CSS
+- **AI**: Google Gemini 3.1 (`@google/genai`) — File API로 영상 업로드
   후 멀티모달 분석
 - **영상 전처리**: ffmpeg (`ffmpeg-static`) — 실제 fps에 맞춰 어드레스/탑/임팩트/피니시
   키 프레임을 추출하고 임팩트 전후 ±3프레임 버스트를 함께 전달합니다.
 - **촬영 품질 게이트**: 해상도·fps·길이와 전신 프레이밍·클럽/볼 노출·카메라
   안정성을 검사하고, 항목별 관찰 가능 여부와 신뢰도를 판정에 반영합니다.
-- **데이터**: SQLite (`better-sqlite3`) — 사용자/분석 요약을 로컬 파일에 저장
+- **데이터**: PostgreSQL — 사용자·영상·분석·작업을 사용자 ID 기준으로 영속 저장
+- **작업 처리**: Redis + BullMQ Worker — 웹 요청과 장시간 영상 분석 분리
+- **영상 저장**: Railway Storage Bucket — 브라우저가 presigned URL로 직접 업로드
 - **UI 언어**: 한국어
 
 ## 시작하기
@@ -74,9 +76,9 @@ npm install
 cp .env.example .env.local
 # .env.local 을 열어 GEMINI_API_KEY 를 채워주세요.
 
-# 3. 개발 서버
-npm run dev
-# http://localhost:3000
+# 3. 기존 서버와 함께 실행할 배포용 개발 서버
+npm run dev:deploy
+# http://localhost:3001
 ```
 
 ### 환경 변수
@@ -85,10 +87,18 @@ npm run dev
 |---|---|
 | `GEMINI_API_KEY` | Google AI Studio에서 발급한 키 (필수) |
 | `GEMINI_MODEL` | 기본 `gemini-3.1-flash-lite`. 멀티모달/비디오 지원 모델이어야 함 |
-| `SQLITE_PATH` | SQLite 파일 경로 (기본 `./data/golf-lesson.db`) |
-| `UPLOAD_DIR` | 영상 임시 저장 디렉토리 (기본 `./uploads`) |
+| `SESSION_SECRET` | 사용자 소유권 쿠키 서명 키. 운영 환경에서 32바이트 이상 필수 |
+| `DATABASE_URL` | Railway PostgreSQL 연결 URL. 로컬에서 비우면 PGlite 사용 |
+| `REDIS_URL` | Railway Redis 연결 URL. 운영 환경에서 Worker 분리에 필수 |
+| `STORAGE_MODE` | 운영 환경은 `s3`, 로컬은 `local` |
+| `BUCKET_*` 또는 `AWS_*` | Railway Bucket endpoint·bucket·access key·secret·region |
+| `MAX_UPLOAD_FILE_BYTES` | 영상 1개 최대 크기. 기본 80 MiB |
+| `MAX_UPLOAD_TOTAL_BYTES` | 요청 1회 총 업로드 크기. 기본 240 MiB |
 | `YOUTUBE_API_KEY` | YouTube Data API v3 키 (선택 — 추천 영상 기능) |
 | `YOUTUBE_WHITELIST_CHANNEL_IDS` | 우선 표시할 채널 ID들 (선택, 쉼표 구분) |
+
+전체 Railway 구성과 CORS·마이그레이션 순서는
+[`docs/deployment/railway.md`](docs/deployment/railway.md)를 참고하세요.
 
 ## 디렉토리 구조
 
@@ -98,16 +108,20 @@ src/
     page.tsx                 메인 페이지(닉네임 + 업로드 + 결과 + 대시보드)
     layout.tsx               전역 레이아웃
     api/
-      analyze/route.ts       영상 업로드 → Gemini 분석 → DB 저장
-      history/route.ts       닉네임별 클럽별 기록 조회
-      user/route.ts          닉네임 등록/조회
+      analyze/jobs/          비동기 분석 작업 생성·상태 조회
+      uploads/               직접 업로드 URL 발급·로컬 스트리밍 폴백
+      history/route.ts       현재 사용자 소유 기록 조회
+      user/route.ts          서명 쿠키 기반 사용자 등록/조회
   components/
     VideoUpload.tsx          영상 선택 및 제출
     AnalysisResult.tsx       이번 분석 결과 카드
     ProgressDashboard.tsx    클럽별 변화 추이 대시보드
   lib/
     coaches.ts               헤드코치 + 등급별 4명의 전담 코치 페르소나
-    db.ts                    SQLite 액세스 및 등급 변화 계산
+    database.ts              PostgreSQL/PGlite 연결·트랜잭션
+    db.ts                    사용자별 분석 기록 및 등급 변화 계산
+    queue.ts                 Redis/BullMQ 작업 등록
+    storage.ts               Railway Bucket 직접 업로드·Worker 읽기
     gemini.ts                Gemini 3.1 호출 + JSON 파싱
     types.ts                 도메인 타입
 ```
@@ -126,10 +140,12 @@ src/
 
 ## 개인정보 / 데이터 처리
 
-- 업로드된 원본 영상은 분석이 끝나는 즉시 서버에서 삭제됩니다.
+- 원본 영상은 웹 서버 메모리를 거치지 않고 사용자별 비공개 Bucket 경로에 저장됩니다.
+- 영상·분석·작업은 서명된 사용자 ID로 소유권을 확인하며, 닉네임만으로 조회할 수 없습니다.
+- Worker가 분석을 위해 만든 임시 파일은 작업 종료 즉시 삭제됩니다.
 - Gemini File API에 업로드된 파일도 분석 직후 `deleteFile`로 정리합니다.
-- SQLite에는 **분석 요약(한 줄 코멘트 + 등급/단계 + 코치 메시지 JSON)** 만
-  남습니다. 다음 분석 때 변화 추이를 보여주기 위한 용도입니다.
+- PostgreSQL에는 영상 메타데이터와 **분석 요약(한 줄 코멘트 + 등급/단계 + 코치 메시지 JSON)** 을
+  사용자별로 보관해 과거 변화와 숙제 이행을 추적합니다.
 
 ## 라이선스
 

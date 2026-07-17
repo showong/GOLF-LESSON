@@ -5,37 +5,51 @@
   "description": "AI 골프 코치가 스크린골프 스윙 영상을 분석해 등급/단계별 맞춤 레슨을 제공하는 튜더 서비스",
   "scripts": {
     "dev": "next dev",
+    "dev:deploy": "next dev -p 3001",
     "build": "next build",
-    "start": "next start",
-    "lint": "next lint",
-    "db:init": "tsx src/lib/db-init.ts",
+    "start": "node .next/standalone/server.js",
+    "start:deploy": "PORT=3001 node .next/standalone/server.js",
+    "lint": "eslint .",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "worker": "tsx src/worker.ts",
     "test:grading": "tsx scripts/test-grading.ts",
     "test:pose": "tsx scripts/test-pose.ts",
     "test:session": "tsx scripts/test-session.ts",
-    "test": "npm run test:grading && npm run test:pose && npm run test:session"
+    "test:deployment": "tsx scripts/test-deployment.ts",
+    "test": "npm run test:grading && npm run test:pose && npm run test:session && npm run test:deployment"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@aws-sdk/client-s3": "^3.1088.0",
+    "@aws-sdk/s3-request-presigner": "^3.1088.0",
+    "@electric-sql/pglite": "^0.5.4",
+    "@google/genai": "^2.12.0",
     "@mediapipe/tasks-vision": "^0.10.35",
-    "better-sqlite3": "^11.3.0",
+    "bullmq": "^5.80.5",
     "ffmpeg-static": "^5.2.0",
-    "next": "14.2.15",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "uuid": "^10.0.0"
+    "ioredis": "^5.11.1",
+    "next": "^16.2.10",
+    "pg": "^8.22.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "uuid": "^14.0.1"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "@types/uuid": "^10.0.0",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.20",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.15",
-    "postcss": "^8.4.47",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^16.2.10",
+    "postcss": "8.5.10",
     "tailwindcss": "^3.4.14",
     "tsx": "^4.19.1",
     "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=22.13 <23"
+  },
+  "overrides": {
+    "postcss": "8.5.10"
   }
 }

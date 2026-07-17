@@ -31,12 +31,33 @@ export default function ProgressDashboard({
       setSections(null);
       return;
     }
-    setLoading(true);
-    fetch(`/api/history?nickname=${encodeURIComponent(nickname.trim())}`)
-      .then((r) => r.json())
-      .then((d) => setSections(d.sections ?? null))
-      .catch(() => setSections(null))
-      .finally(() => setLoading(false));
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setLoading(true);
+      try {
+        const userResponse = await fetch("/api/user", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nickname: nickname.trim() }),
+          signal: controller.signal,
+        });
+        if (!userResponse.ok) throw new Error("사용자 세션 생성 실패");
+        const historyResponse = await fetch("/api/history", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const data = await historyResponse.json();
+        setSections(historyResponse.ok ? (data.sections ?? null) : null);
+      } catch {
+        if (!controller.signal.aborted) setSections(null);
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 350);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [nickname, refreshKey]);
 
   if (!nickname.trim()) return null;

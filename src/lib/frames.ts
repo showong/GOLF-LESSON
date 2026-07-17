@@ -313,7 +313,7 @@ export async function extractKeyFrames(
       const ts = clamp(Math.round(rawTs * fps) / fps);
       const out = path.join(tmpDir, `f${i}.jpg`);
       await extractSingleFrame(videoPath, ts, out);
-      const data = await fs.readFile(out);
+      const data = await fs.readFile(/*turbopackIgnore: true*/ out);
       frames.push({
         view,
         label: `${prefix}${viewLabel} ${label} (t=${ts.toFixed(2)}s${usedDetected ? ", 위상 감지" : ""})`,
@@ -332,7 +332,7 @@ export async function extractKeyFrames(
           const burstTs = clamp(ts + offset / fps);
           const burstOut = path.join(tmpDir, `f${i}-impact-${offset}.jpg`);
           await extractSingleFrame(videoPath, burstTs, burstOut);
-          const burstData = await fs.readFile(burstOut);
+          const burstData = await fs.readFile(/*turbopackIgnore: true*/ burstOut);
           frames.push({
             view,
             label: `${prefix}${viewLabel} 임팩트 ${offset > 0 ? "+" : ""}${offset}프레임 (t=${burstTs.toFixed(3)}s)`,

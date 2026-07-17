@@ -27,6 +27,7 @@ export default function VideoUpload({ nickname, onResult }: Props) {
   const [frontFile, setFrontFile] = useState<File | null>(null);
   const [clubHint, setClubHint] = useState<ClubHint>("");
   const [busy, setBusy] = useState(false);
+  const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<UploadTab>("single");
   const [multiSwings, setMultiSwings] = useState<MultiSwing[]>(emptyMultiSwings);
@@ -107,6 +108,26 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         return;
       }
     }
+    const selectedFiles: { file: File; view: "side" | "front"; swingIndex: number }[] =
+      tab === "multi"
+        ? selectedMultiSwings.flatMap((swing) => [
+            ...(swing.side ? [{ file: swing.side, view: "side" as const, swingIndex: swing.index }] : []),
+            ...(swing.front ? [{ file: swing.front, view: "front" as const, swingIndex: swing.index }] : []),
+          ])
+        : [
+            ...(sideFile ? [{ file: sideFile, view: "side" as const, swingIndex: 0 }] : []),
+            ...(frontFile ? [{ file: frontFile, view: "front" as const, swingIndex: 0 }] : []),
+          ];
+    const maxFileBytes = 80 * 1024 * 1024;
+    const maxTotalBytes = 240 * 1024 * 1024;
+    if (selectedFiles.some(({ file }) => file.size > maxFileBytes)) {
+      setError("영상 한 개는 최대 80MB까지 업로드할 수 있어요.");
+      return;
+    }
+    if (selectedFiles.reduce((sum, { file }) => sum + file.size, 0) > maxTotalBytes) {
+      setError("전체 영상 용량은 최대 240MB까지 업로드할 수 있어요.");
+      return;
+    }
     setError(null);
     setBusy(true);
     try {
@@ -117,28 +138,85 @@ export default function VideoUpload({ nickname, onResult }: Props) {
           ),
         );
       }
-      const fd = new FormData();
-      fd.append("nickname", nickname.trim());
-      if (tab === "multi") {
-        for (const swing of selectedMultiSwings) {
-          if (swing.side) fd.append(`multiSide${swing.index}`, swing.side);
-          if (swing.front) fd.append(`multiFront${swing.index}`, swing.front);
+      setBusyMessage("사용자 세션을 확인하고 있어요…");
+      const userResponse = await fetch("/api/user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nickname: nickname.trim() }),
+      });
+      if (!userResponse.ok) throw new Error("사용자 세션을 만들지 못했습니다.");
+
+      setBusyMessage("안전한 영상 업로드를 준비하고 있어요…");
+      const presignResponse = await fetch("/api/uploads/presign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          files: selectedFiles.map(({ file, view, swingIndex }) => ({
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            view,
+            swingIndex,
+          })),
+        }),
+      });
+      const presign = await presignResponse.json();
+      if (!presignResponse.ok) throw new Error(presign?.error ?? "업로드 준비 실패");
+      if (!Array.isArray(presign.uploads) || presign.uploads.length !== selectedFiles.length) {
+        throw new Error("업로드 예약 정보가 올바르지 않습니다.");
+      }
+
+      // 모바일 네트워크와 서버 부하를 고려해 한 번에 하나씩 직접 업로드한다.
+      for (let index = 0; index < selectedFiles.length; index++) {
+        setBusyMessage(`영상을 업로드하고 있어요… (${index + 1}/${selectedFiles.length})`);
+        const target = presign.uploads[index] as {
+          url: string;
+          method: string;
+          headers?: Record<string, string>;
+        };
+        const uploadResponse = await fetch(target.url, {
+          method: target.method || "PUT",
+          headers: target.headers,
+          body: selectedFiles[index].file,
+        });
+        if (!uploadResponse.ok) throw new Error(`영상 ${index + 1} 업로드에 실패했습니다.`);
+      }
+
+      setBusyMessage("분석 대기열에 등록하고 있어요…");
+      const jobResponse = await fetch("/api/analyze/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: tab,
+          clubHint: clubHint || undefined,
+          videoIds: presign.uploads.map((upload: { videoId: string }) => upload.videoId),
+          idempotencyKey: crypto.randomUUID(),
+          poseSide: tab === "single" ? poseRef.current.side : undefined,
+          poseFront: tab === "single" ? poseRef.current.front : undefined,
+        }),
+      });
+      const jobData = await jobResponse.json();
+      if (!jobResponse.ok) throw new Error(jobData?.error ?? "분석 작업 등록 실패");
+
+      const deadline = Date.now() + 15 * 60 * 1000;
+      let data: unknown = null;
+      while (Date.now() < deadline) {
+        setBusyMessage("코치가 영상을 분석하고 있어요… 페이지를 닫아도 작업은 계속돼요.");
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        const statusResponse = await fetch(`/api/analyze/jobs/${jobData.jobId}`, {
+          cache: "no-store",
+        });
+        const statusData = await statusResponse.json();
+        if (!statusResponse.ok) throw new Error(statusData?.error ?? "분석 상태 확인 실패");
+        if (statusData.status === "completed") {
+          data = statusData.result;
+          break;
         }
-      } else {
-        if (sideFile) fd.append("videoSide", sideFile);
-        if (frontFile) fd.append("videoFront", frontFile);
+        if (statusData.status === "failed") {
+          throw new Error(statusData.error ?? "분석을 완료하지 못했습니다.");
+        }
       }
-      if (clubHint) fd.append("clubHint", clubHint);
-      // 브라우저에서 추출된 관절 좌표(있을 때만) — 서버 위상 감지·정량 지표에 사용
-      if (sideFile && poseRef.current.side) {
-        fd.append("poseSide", JSON.stringify(poseRef.current.side));
-      }
-      if (frontFile && poseRef.current.front) {
-        fd.append("poseFront", JSON.stringify(poseRef.current.front));
-      }
-      const res = await fetch("/api/analyze", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error ?? "분석 실패");
+      if (!data) throw new Error("분석 시간이 초과됐어요. 기록 화면에서 잠시 후 다시 확인해 주세요.");
       const skeletonSources: SkeletonSource[] = [];
       if (tab === "single") {
         if (sideFile && poseRef.current.side) {
@@ -158,6 +236,7 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       setError(e instanceof Error ? e.message : "알 수 없는 오류");
     } finally {
       setBusy(false);
+      setBusyMessage(null);
     }
   }
 
@@ -408,9 +487,9 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       )}
       {busy && (
         <div className="mt-3 text-xs leading-relaxed text-fairway-700/70">
-          {tab === "multi"
+          {busyMessage ?? (tab === "multi"
             ? "스윙별 측면·정면 위상 정렬 → 독립 채점 → 공통 문제와 크리티컬 문제 빈도 집계 → 코치 티칭 순으로 진행돼요. 1~2분 걸릴 수 있어요."
-            : "각 영상별 키 프레임 추출 → Gemini 업로드 → 헤드코치 판정 → 전담 코치 분석 → 헤드코치 리뷰. 영상 2개일 경우 1분 정도 걸려요."}
+            : "각 영상별 키 프레임 추출 → Gemini 업로드 → 헤드코치 판정 → 전담 코치 분석 → 헤드코치 리뷰. 영상 2개일 경우 1분 정도 걸려요.")}
         </div>
       )}
     </section>
@@ -426,7 +505,7 @@ function FileSlot({
   hint,
   view,
 }: {
-  inputRef: React.RefObject<HTMLInputElement>;
+  inputRef: React.RefObject<HTMLInputElement | null>;
   file: File | null;
   onChange: (f: File | null) => void;
   title: string;

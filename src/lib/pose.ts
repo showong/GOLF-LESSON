@@ -227,7 +227,6 @@ export function computePoseMetrics(
   phases: PhaseTimestamps,
 ): PoseMetrics | null {
   const addr = phases.address !== undefined ? frameAt(track, phases.address) : null;
-  const top = phases.top !== undefined ? frameAt(track, phases.top) : null;
   const impact = phases.impact !== undefined ? frameAt(track, phases.impact) : null;
   if (!addr) return null;
 

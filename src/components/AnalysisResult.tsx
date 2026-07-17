@@ -866,6 +866,45 @@ function HomeworkCard({
   );
 }
 
+function FaultGroup({
+  title,
+  faults,
+  badge,
+  desc,
+  swingCount,
+}: {
+  title: string;
+  faults: { title: string; count: number }[];
+  badge: string;
+  desc: string;
+  swingCount: number;
+}) {
+  return (
+    <div className="rounded-lg border border-fairway-100 p-3">
+      <div className="flex items-center gap-1.5">
+        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${badge}`}>
+          {title}
+        </span>
+        <span className="text-[10px] text-fairway-700/60">{desc}</span>
+      </div>
+      {faults.length === 0 ? (
+        <p className="mt-1.5 text-xs text-fairway-700/60">발견되지 않음 ✓</p>
+      ) : (
+        <ul className="mt-1.5 space-y-1">
+          {faults.map((fault) => (
+            <li key={fault.title} className="text-xs text-fairway-900">
+              · {fault.title}
+              <span className="ml-1 text-fairway-700/60">
+                ({fault.count}/{swingCount}회)
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function SessionCard({
   session,
 }: {
@@ -879,41 +918,6 @@ function SessionCard({
         ? { label: "보통", bar: "bg-amber-500", text: "text-amber-700" }
         : { label: "일관성이 최우선 과제", bar: "bg-rose-500", text: "text-rose-700" };
   const maxW = Math.max(...session.perSwingWeighted, 1);
-
-  const FaultGroup = ({
-    title,
-    faults,
-    badge,
-    desc,
-  }: {
-    title: string;
-    faults: { title: string; count: number }[];
-    badge: string;
-    desc: string;
-  }) => (
-    <div className="rounded-lg border border-fairway-100 p-3">
-      <div className="flex items-center gap-1.5">
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${badge}`}>
-          {title}
-        </span>
-        <span className="text-[10px] text-fairway-700/60">{desc}</span>
-      </div>
-      {faults.length === 0 ? (
-        <p className="mt-1.5 text-xs text-fairway-700/60">발견되지 않음 ✓</p>
-      ) : (
-        <ul className="mt-1.5 space-y-1">
-          {faults.map((f, i) => (
-            <li key={i} className="text-xs text-fairway-900">
-              · {f.title}
-              <span className="ml-1 text-fairway-700/60">
-                ({f.count}/{session.swingCount}회)
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
 
   return (
     <div className="rounded-2xl border border-fairway-100 bg-white p-4 shadow-sm sm:p-5">
@@ -972,18 +976,21 @@ function SessionCard({
           badge="bg-rose-600"
           desc="스윙 60%↑ · 반복 패턴"
           faults={session.habitualFaults}
+          swingCount={session.swingCount}
         />
         <FaultGroup
           title="간헐적"
           badge="bg-amber-500"
           desc="일부 스윙에서만"
           faults={session.intermittentFaults}
+          swingCount={session.swingCount}
         />
         <FaultGroup
           title="크리티컬"
           badge="bg-violet-600"
           desc="빈도는 낮지만 구질에 직접 영향"
           faults={session.rareCriticalFaults}
+          swingCount={session.swingCount}
         />
       </div>
     </div>

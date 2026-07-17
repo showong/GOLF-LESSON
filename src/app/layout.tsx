@@ -56,8 +56,8 @@ export default function RootLayout({
           {children}
         </main>
         <footer className="mx-auto max-w-5xl px-4 py-6 text-xs text-fairway-700/60 safe-pb sm:px-6 sm:py-8">
-          영상은 분석 직후 서버에서 삭제됩니다. 분석 요약만 저장되어 다음 분석의
-          변화 추이에 사용돼요.
+          영상과 분석 기록은 사용자 ID별 비공개 저장소에 분리 보관되어 과거 스윙과
+          숙제 이행 변화를 확인하는 데 사용돼요.
         </footer>
       </body>
     </html>

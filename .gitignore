@@ -3,6 +3,7 @@ node_modules/
 out/
 build/
 .env
+.env.save
 .env.local
 .env*.local
 *.log
@@ -15,6 +16,8 @@ data/*.db
 data/*.db-journal
 data/*.db-wal
 data/*.db-shm
+data/pglite/
+data/local-bucket/
 uploads/
 tmp/
 tsconfig.tsbuildinfo

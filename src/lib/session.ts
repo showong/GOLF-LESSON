@@ -10,7 +10,6 @@
 import {
   MECHANICS_DIMENSIONS,
   weightedTotal,
-  type MechanicsDim,
   type MechanicsScore,
 } from "./types";
 

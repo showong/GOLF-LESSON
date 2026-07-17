@@ -1,9 +1,10 @@
 import {
-  GoogleGenerativeAI,
+  FileState,
+  GoogleGenAI,
   type Content,
-  type GenerationConfig,
-} from "@google/generative-ai";
-import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
+  type GenerateContentConfig,
+  type Part,
+} from "@google/genai";
 import fs from "node:fs";
 import path from "node:path";
 import { COACHES, HEAD_COACH, type CoachPersona } from "./coaches";
@@ -975,18 +976,28 @@ export interface AnalyzeInput {
 }
 
 function makeModel(systemInstruction: string, maxOutputTokens = 4096) {
-  const genAI = new GoogleGenerativeAI(apiKey());
-  const generationConfig: GenerationConfig = {
+  const genAI = new GoogleGenAI({ apiKey: apiKey() });
+  const generationConfig: GenerateContentConfig = {
+    systemInstruction,
     responseMimeType: "application/json",
     temperature: 0.1,
     topP: 0.1,
     maxOutputTokens,
   };
-  return genAI.getGenerativeModel({
-    model: MODEL,
-    systemInstruction,
-    generationConfig,
-  });
+  return {
+    async generateContent({ contents }: { contents: Content[] }) {
+      const response = await genAI.models.generateContent({
+        model: MODEL,
+        contents,
+        config: generationConfig,
+      });
+      return {
+        response: {
+          text: () => response.text ?? "",
+        },
+      };
+    },
+  };
 }
 
 // ---------- Stage 0: 스윙 위상 감지 (2-pass 프레임 추출의 Pass 1) ----------
@@ -1168,7 +1179,7 @@ async function runRegionSpecialists(
     regions.map(async (region) => {
       try {
         const model = makeModel(buildSpecialistPrompt(region));
-        const parts: Content["parts"] = [
+        const parts: Part[] = [
           {
             text: `아래 스윙 정지 프레임들을 보고 ${BODY_REGION_LABEL[region]} 관찰 JSON만 출력하세요.`,
           },
@@ -1240,43 +1251,50 @@ export async function analyzeSwingVideo(
     );
   }
 
-  const fileManager = new GoogleAIFileManager(apiKey());
+  const genAI = new GoogleGenAI({ apiKey: apiKey() });
+  const uploadedFileNames = new Set<string>();
 
-  // 1) 각 영상 업로드
-  const uploads = await Promise.all(
-    input.videos.map(async (v) => {
-      const uploadResult = await fileManager.uploadFile(v.filePath, {
-        mimeType: v.mimeType,
-        displayName: `${v.view}-${path.basename(v.filePath)}`,
-      });
-      return { view: v.view, filePath: v.filePath, uploadResult };
-    }),
-  );
+  // 업로드 시작부터 정리 finally로 감싸 부분 업로드/전처리 실패에도 원격 파일을 삭제한다.
+  try {
+    // 1) 각 영상 업로드
+    const uploads = await Promise.all(
+      input.videos.map(async (v) => {
+        const file = await genAI.files.upload({
+          file: v.filePath,
+          config: {
+            mimeType: v.mimeType,
+            displayName: `${v.view}-${path.basename(v.filePath)}`,
+          },
+        });
+        if (!file.name) throw new Error("Gemini 업로드 파일 이름을 받지 못했습니다.");
+        uploadedFileNames.add(file.name);
+        return { view: v.view, filePath: v.filePath, file };
+      }),
+    );
 
-  // 2) ACTIVE 상태가 될 때까지 모든 파일 대기.
-  const start = Date.now();
-  for (const u of uploads) {
-    let file = await fileManager.getFile(u.uploadResult.file.name);
-    while (file.state === FileState.PROCESSING) {
-      if (Date.now() - start > 180_000) {
-        throw new Error("영상 전처리가 너무 오래 걸려 중단했습니다.");
+    // 2) ACTIVE 상태가 될 때까지 모든 파일 대기.
+    const start = Date.now();
+    for (const u of uploads) {
+      let file = await genAI.files.get({ name: u.file.name! });
+      while (file.state === FileState.PROCESSING) {
+        if (Date.now() - start > 180_000) {
+          throw new Error("영상 전처리가 너무 오래 걸려 중단했습니다.");
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+        file = await genAI.files.get({ name: u.file.name! });
       }
-      await new Promise((r) => setTimeout(r, 2000));
-      file = await fileManager.getFile(u.uploadResult.file.name);
+      if (file.state !== FileState.ACTIVE) {
+        throw new Error(`Gemini 파일 상태가 비정상입니다(${u.view}): ${file.state}`);
+      }
+      u.file = file;
     }
-    if (file.state !== FileState.ACTIVE) {
-      throw new Error(`Gemini 파일 상태가 비정상입니다(${u.view}): ${file.state}`);
-    }
-    // ACTIVE 상태의 uri/mimeType으로 갱신
-    u.uploadResult.file.uri = file.uri;
-    u.uploadResult.file.mimeType = file.mimeType;
-  }
 
-  const uploadedVideos: UploadedVideo[] = uploads.map((u) => ({
-    view: u.view,
-    uri: u.uploadResult.file.uri,
-    mimeType: u.uploadResult.file.mimeType,
-  }));
+    const uploadedVideos: UploadedVideo[] = uploads.map((u) => {
+      if (!u.file.uri || !u.file.mimeType) {
+        throw new Error(`Gemini 활성 파일 정보가 불완전합니다(${u.view}).`);
+      }
+      return { view: u.view, uri: u.file.uri, mimeType: u.file.mimeType };
+    });
   const viewsUsed = Array.from(new Set(uploadedVideos.map((v) => v.view)));
 
   // 3) Pass 1: 위상 감지 — 우선순위 폴백 체인
@@ -1347,7 +1365,6 @@ export async function analyzeSwingVideo(
     return [] as RegionReport[];
   });
 
-  try {
     // === Stage 1: 헤드코치 판정 (모든 시점 + 키 프레임 + 분석관 보고서) ===
     const judgement = await runHeadJudge(
       uploadedVideos,
@@ -1492,11 +1509,9 @@ export async function analyzeSwingVideo(
       review,
     };
   } finally {
-    // 업로드된 모든 파일 정리.
+    // 부분 업로드를 포함한 모든 Gemini 파일 정리.
     await Promise.all(
-      uploads.map((u) =>
-        fileManager.deleteFile(u.uploadResult.file.name).catch(() => {}),
-      ),
+      [...uploadedFileNames].map((name) => genAI.files.delete({ name }).catch(() => {})),
     );
   }
 }
@@ -1516,8 +1531,8 @@ interface UploadedVideo {
 function buildMediaParts(
   videos: UploadedVideo[],
   frames: ExtractedFrame[],
-): Content["parts"] {
-  const parts: Content["parts"] = [];
+): Part[] {
+  const parts: Part[] = [];
   const order: VideoView[] = ["side", "front"];
   for (const view of order) {
     const vFrames = frames.filter((f) => f.view === view);
@@ -1662,7 +1677,7 @@ async function runHeadJudge(
 
   const regionBlock = renderRegionReports(regionReports);
 
-  const parts: Content["parts"] = [
+  const parts: Part[] = [
     { text: hintBlock },
     { text: viewsBlock },
     ...(regionBlock ? [{ text: regionBlock }] : []),
@@ -1738,7 +1753,7 @@ async function runCoach(
   const model = makeModel(
     buildCoachPrompt(coach, judgement, grade, level, regionReports, previous),
   );
-  const parts: Content["parts"] = [];
+  const parts: Part[] = [];
   if (attempt > 1 && retryFeedback) {
     parts.push({
       text: `[헤드코치 재작성 요청 — 시도 ${attempt}/${MAX_REVIEW_ATTEMPTS}]\n이전 작성물이 헤드코치 리뷰를 통과하지 못했습니다.\n다음 피드백을 반영해서 다시 작성하세요:\n\n${retryFeedback}`,
@@ -1906,8 +1921,6 @@ export async function analyzeSwingSession(
     );
   }
 
-  const fileManager = new GoogleAIFileManager(apiKey());
-
   // 스윙별: 모션 분석(결정적) → 프레임 3장(어드레스/탑/임팩트, 버스트 없음)
   // 세션 모드는 LLM 위상 감지를 생략해 비용을 스윙 수와 무관하게 유지한다.
   const frameSets = await Promise.all(
@@ -1944,7 +1957,7 @@ export async function analyzeSwingSession(
         `스윙 ${index + 1}: ${swing.videos.map((v) => VIDEO_VIEW_LABEL[v.view]).join("+")}`,
     )
     .join(" · ");
-  const judgeParts: Content["parts"] = [
+  const judgeParts: Part[] = [
     {
       text: `[멀티샷 정보] 사용자 지정 클럽: ${CLUB_LABEL[input.clubType]} · 스윙 ${n}개\n${viewSummary}\n같은 스윙의 두 시점을 합쳐 한 번만 채점하세요. perSwing은 반드시 ${n}개.`,
     },
@@ -2015,7 +2028,7 @@ ${agg.mismatchedSwings.length > 0 ? `- 주의: 스윙 ${agg.mismatchedSwings.joi
     const coachModel = makeModel(
       buildCoachPrompt(coach, judgement, grade, level, [], previous) + sessionBlock,
     );
-    const coachParts: Content["parts"] = [];
+    const coachParts: Part[] = [];
     if (attempt > 1 && retryFeedback) {
       coachParts.push({
         text: `[헤드코치 재작성 요청 — 시도 ${attempt}/${MAX_REVIEW_ATTEMPTS}]\n${retryFeedback}`,

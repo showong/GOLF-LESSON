@@ -14,7 +14,7 @@ import type { VideoView } from "./types";
 // jsdelivr CDN: tasks-vision WASM 런타임 + Google 호스팅 포즈 모델(lite).
 // 오프라인/차단 환경에서는 로드 실패 → null 폴백이 정상 동작.
 const WASM_BASE =
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
 const MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
 
