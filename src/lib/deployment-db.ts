@@ -70,26 +70,63 @@ export async function consumeRateLimit(
   });
 }
 
+export async function deleteOldRateLimitEvents(): Promise<number> {
+  const result = await query(
+    "DELETE FROM rate_limit_events WHERE created_at < NOW() - INTERVAL '2 days'",
+  );
+  return result.rowCount ?? 0;
+}
+
 export async function createVideoReservations(
   userId: string,
   files: UploadFileInput[],
 ): Promise<VideoRow[]> {
   const rows: VideoRow[] = [];
+  const retentionDays = Number(process.env.VIDEO_RETENTION_DAYS ?? 30);
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
+    throw new Error("영상 보존 기간 설정이 올바르지 않습니다.");
+  }
   await withTransaction(async (db) => {
     for (const file of files) {
       const id = uuidv4();
       const objectKey = `users/${userId}/uploads/${id}${extensionForMime(file.type)}`;
       const result = await db.query<VideoDbRow>(
         `INSERT INTO videos
-          (id, user_id, object_key, original_name, mime_type, size_bytes, view_type, swing_index)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          (id, user_id, object_key, original_name, mime_type, size_bytes, view_type, swing_index,
+           expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW() + ($9::text || ' days')::interval)
          RETURNING *`,
-        [id, userId, objectKey, file.name, file.type, file.size, file.view, file.swingIndex],
+        [
+          id,
+          userId,
+          objectKey,
+          file.name,
+          file.type,
+          file.size,
+          file.view,
+          file.swingIndex,
+          retentionDays,
+        ],
       );
       rows.push(videoFromRow(result.rows[0]));
     }
   });
   return rows;
+}
+
+export async function listVideosForUser(userId: string): Promise<VideoRow[]> {
+  const result = await query<VideoDbRow>("SELECT * FROM videos WHERE user_id = $1", [userId]);
+  return result.rows.map(videoFromRow);
+}
+
+export async function listExpiredVideos(limit = 100): Promise<VideoRow[]> {
+  const result = await query<VideoDbRow>(
+    `SELECT * FROM videos
+     WHERE expires_at <= NOW() AND status <> 'deleted'
+     ORDER BY expires_at ASC LIMIT $1`,
+    [Math.max(1, Math.min(500, limit))],
+  );
+  return result.rows.map(videoFromRow);
 }
 
 export async function getVideoForUser(userId: string, videoId: string): Promise<VideoRow | null> {
@@ -214,20 +251,45 @@ export async function claimJob(jobId: string): Promise<AnalysisJobRow | null> {
   return result.rows[0] ? jobFromRow(result.rows[0]) : null;
 }
 
-export async function completeJob(jobId: string, analysisId: string) {
-  await query(
+export async function completeJob(jobId: string, analysisId: string): Promise<boolean> {
+  const result = await query(
     `UPDATE analysis_jobs SET status = 'completed', result_analysis_id = $2,
-       completed_at = NOW(), error_code = NULL, error_message = NULL WHERE id = $1`,
+       completed_at = NOW(), error_code = NULL, error_message = NULL,
+       payload_json = jsonb_build_object(
+         'mode', mode, 'clubHint', club_hint, 'videos', '[]'::jsonb
+       )
+     WHERE id = $1 AND status = 'processing'`,
     [jobId, analysisId],
   );
+  return result.rowCount === 1;
 }
 
 export async function failJob(jobId: string, code: string, message: string) {
   await query(
     `UPDATE analysis_jobs SET status = 'failed', error_code = $2, error_message = $3,
-       completed_at = NOW() WHERE id = $1`,
+       completed_at = NOW(),
+       payload_json = jsonb_build_object(
+         'mode', mode, 'clubHint', club_hint, 'videos', '[]'::jsonb
+       )
+     WHERE id = $1 AND status IN ('queued', 'processing')`,
     [jobId, code.slice(0, 80), message.slice(0, 500)],
   );
+}
+
+export async function failStaleJobs(timeoutMinutes = 45): Promise<number> {
+  const safeTimeout = Math.max(15, Math.min(180, Math.trunc(timeoutMinutes)));
+  const result = await query(
+    `UPDATE analysis_jobs SET
+       status = 'failed', error_code = 'ANALYSIS_TIMEOUT',
+       error_message = '분석 작업 제한 시간을 초과했습니다.', completed_at = NOW(),
+       payload_json = jsonb_build_object(
+         'mode', mode, 'clubHint', club_hint, 'videos', '[]'::jsonb
+       )
+     WHERE status = 'processing'
+       AND started_at < NOW() - ($1::text || ' minutes')::interval`,
+    [safeTimeout],
+  );
+  return result.rowCount ?? 0;
 }
 
 export async function getJob(jobId: string): Promise<AnalysisJobRow | null> {

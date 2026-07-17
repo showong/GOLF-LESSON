@@ -10,6 +10,7 @@ const NICKNAME_KEY = "golf-tutor:nickname";
 
 export default function HomePage() {
   const [nickname, setNickname] = useState("");
+  const [pilotAccessCode, setPilotAccessCode] = useState("");
   const [result, setResult] = useState<unknown>(null);
   const [skeletonSources, setSkeletonSources] = useState<SkeletonSource[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -47,11 +48,23 @@ export default function HomePage() {
             autoComplete="nickname"
             className="mt-1.5 block w-full rounded-lg border border-fairway-600 bg-fairway-900/40 px-3 py-3 text-base text-white placeholder-fairway-100/40 focus:border-sand-300 focus:outline-none"
           />
+          <label className="mt-3 block text-xs font-medium text-fairway-100/80">
+            파일럿 초대 코드
+          </label>
+          <input
+            value={pilotAccessCode}
+            onChange={(e) => setPilotAccessCode(e.target.value)}
+            placeholder="처음 이용할 때만 입력"
+            type="password"
+            autoComplete="off"
+            className="mt-1.5 block w-full rounded-lg border border-fairway-600 bg-fairway-900/40 px-3 py-3 text-base text-white placeholder-fairway-100/40 focus:border-sand-300 focus:outline-none"
+          />
         </div>
       </section>
 
       <VideoUpload
         nickname={nickname}
+        pilotAccessCode={pilotAccessCode}
         onResult={(data, sources) => {
           setResult(data);
           setSkeletonSources(sources);

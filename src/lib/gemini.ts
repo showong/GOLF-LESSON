@@ -976,7 +976,7 @@ export interface AnalyzeInput {
 }
 
 function makeModel(systemInstruction: string, maxOutputTokens = 4096) {
-  const genAI = new GoogleGenAI({ apiKey: apiKey() });
+  const genAI = createGenAIClient();
   const generationConfig: GenerateContentConfig = {
     systemInstruction,
     responseMimeType: "application/json",
@@ -998,6 +998,13 @@ function makeModel(systemInstruction: string, maxOutputTokens = 4096) {
       };
     },
   };
+}
+
+function createGenAIClient() {
+  return new GoogleGenAI({
+    apiKey: apiKey(),
+    httpOptions: { timeout: Number(process.env.GEMINI_HTTP_TIMEOUT_MS ?? 120_000) },
+  });
 }
 
 // ---------- Stage 0: 스윙 위상 감지 (2-pass 프레임 추출의 Pass 1) ----------
@@ -1251,7 +1258,7 @@ export async function analyzeSwingVideo(
     );
   }
 
-  const genAI = new GoogleGenAI({ apiKey: apiKey() });
+  const genAI = createGenAIClient();
   const uploadedFileNames = new Set<string>();
 
   // 업로드 시작부터 정리 finally로 감싸 부분 업로드/전처리 실패에도 원격 파일을 삭제한다.

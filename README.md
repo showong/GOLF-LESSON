@@ -87,14 +87,19 @@ npm run dev:deploy
 |---|---|
 | `GEMINI_API_KEY` | Google AI Studio에서 발급한 키 (필수) |
 | `GEMINI_MODEL` | 기본 `gemini-3.1-flash-lite`. 멀티모달/비디오 지원 모델이어야 함 |
+| `GEMINI_PAID_SERVICE_ACKNOWLEDGED` | 운영 키가 결제 연결 프로젝트임을 확인할 때 `true` |
 | `SESSION_SECRET` | 사용자 소유권 쿠키 서명 키. 운영 환경에서 32바이트 이상 필수 |
+| `PILOT_ACCESS_REQUIRED` / `PILOT_ACCESS_CODE_SHA256` | 비공개 파일럿 접근과 초대 코드 해시 |
 | `DATABASE_URL` | Railway PostgreSQL 연결 URL. 로컬에서 비우면 PGlite 사용 |
 | `REDIS_URL` | Railway Redis 연결 URL. 운영 환경에서 Worker 분리에 필수 |
 | `STORAGE_MODE` | 운영 환경은 `s3`, 로컬은 `local` |
 | `BUCKET_*` 또는 `AWS_*` | Railway Bucket endpoint·bucket·access key·secret·region |
 | `MAX_UPLOAD_FILE_BYTES` | 영상 1개 최대 크기. 기본 80 MiB |
 | `MAX_UPLOAD_TOTAL_BYTES` | 요청 1회 총 업로드 크기. 기본 240 MiB |
+| `VIDEO_RETENTION_DAYS` | 원본 영상 자동 삭제 기한. 기본 30일 |
+| `PUBLIC_APP_ORIGIN` / `PRIVACY_CONTACT_EMAIL` | 운영 주소와 개인정보 문의처 |
 | `YOUTUBE_API_KEY` | YouTube Data API v3 키 (선택 — 추천 영상 기능) |
+| `YOUTUBE_RECOMMENDATIONS_ENABLED` | 파일럿 기본 `false`; 정책 검토 후 활성화 |
 | `YOUTUBE_WHITELIST_CHANNEL_IDS` | 우선 표시할 채널 ID들 (선택, 쉼표 구분) |
 
 전체 Railway 구성과 CORS·마이그레이션 순서는
@@ -144,9 +149,13 @@ src/
 - 영상·분석·작업은 서명된 사용자 ID로 소유권을 확인하며, 닉네임만으로 조회할 수 없습니다.
 - Worker가 분석을 위해 만든 임시 파일은 작업 종료 즉시 삭제됩니다.
 - Gemini File API에 업로드된 파일도 분석 직후 `deleteFile`로 정리합니다.
+- Bucket 원본 영상은 `VIDEO_RETENTION_DAYS` 이후 cleanup Cron이 삭제합니다.
+- 사용자는 `/settings`에서 연결된 영상과 분석 기록 전체를 삭제할 수 있습니다.
 - PostgreSQL에는 영상 메타데이터와 **분석 요약(한 줄 코멘트 + 등급/단계 + 코치 메시지 JSON)** 을
   사용자별로 보관해 과거 변화와 숙제 이행을 추적합니다.
 
-## 라이선스
+## 라이선스와 상용 배포
 
-이 저장소는 학습/실험 용도입니다.
+자체 소스와 원본 자산은 All Rights Reserved 정책을 적용합니다. 제3자 의존성 고지와
+운영 컨테이너의 LGPL FFmpeg 구성은 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)를
+참고하세요. `npm run license:check`는 의존성 라이선스를 검사하고 CycloneDX SBOM을 생성합니다.

@@ -8,6 +8,7 @@ import type { PoseExtractionResult } from "@/lib/pose-client";
 
 interface Props {
   nickname: string;
+  pilotAccessCode: string;
   onResult: (data: unknown, skeletonSources: SkeletonSource[]) => void;
 }
 
@@ -20,7 +21,7 @@ type MultiSwing = { side: File | null; front: File | null };
 const emptyMultiSwings = (): MultiSwing[] =>
   Array.from({ length: 3 }, () => ({ side: null, front: null }));
 
-export default function VideoUpload({ nickname, onResult }: Props) {
+export default function VideoUpload({ nickname, pilotAccessCode, onResult }: Props) {
   const sideRef = useRef<HTMLInputElement>(null);
   const frontRef = useRef<HTMLInputElement>(null);
   const [sideFile, setSideFile] = useState<File | null>(null);
@@ -31,6 +32,11 @@ export default function VideoUpload({ nickname, onResult }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<UploadTab>("single");
   const [multiSwings, setMultiSwings] = useState<MultiSwing[]>(emptyMultiSwings);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
+  const [age18Confirmed, setAge18Confirmed] = useState(false);
+  const [videoRightsConfirmed, setVideoRightsConfirmed] = useState(false);
+  const [modelImprovementConsent, setModelImprovementConsent] = useState(false);
 
   // 브라우저 스켈레톤(관절) 추출 — 파일 선택 즉시 백그라운드로 진행.
   // 실패해도 분석은 서버 폴백으로 정상 동작하므로 제출을 막지 않는다.
@@ -94,6 +100,10 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       setError("먼저 닉네임을 입력해 주세요.");
       return;
     }
+    if (!termsAccepted || !privacyAccepted || !age18Confirmed || !videoRightsConfirmed) {
+      setError("필수 이용 동의와 영상 권리 확인을 완료해 주세요.");
+      return;
+    }
     if (tab === "single" && !sideFile && !frontFile) {
       setError("측면샷 또는 정면샷 중 최소 1개는 업로드해 주세요.");
       return;
@@ -142,9 +152,21 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       const userResponse = await fetch("/api/user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nickname: nickname.trim() }),
+        body: JSON.stringify({
+          nickname: nickname.trim(),
+          pilotAccessCode,
+          termsAccepted,
+          privacyAccepted,
+          serviceAnalysisAccepted: true,
+          age18Confirmed,
+          videoRightsConfirmed,
+          modelImprovementConsent,
+        }),
       });
-      if (!userResponse.ok) throw new Error("사용자 세션을 만들지 못했습니다.");
+      const userData = await userResponse.json();
+      if (!userResponse.ok) {
+        throw new Error(userData?.error ?? "사용자 세션을 만들지 못했습니다.");
+      }
 
       setBusyMessage("안전한 영상 업로드를 준비하고 있어요…");
       const presignResponse = await fetch("/api/uploads/presign", {
@@ -439,6 +461,25 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         </div>
       </div>
 
+      <fieldset className="mt-5 space-y-2 rounded-xl border border-fairway-100 bg-fairway-50/60 p-3">
+        <legend className="px-1 text-xs font-semibold text-fairway-900">이용 및 데이터 처리 동의</legend>
+        <ConsentCheckbox checked={termsAccepted} onChange={setTermsAccepted}>
+          <a href="/terms" target="_blank" className="font-semibold underline">이용약관</a>에 동의합니다. (필수)
+        </ConsentCheckbox>
+        <ConsentCheckbox checked={privacyAccepted} onChange={setPrivacyAccepted}>
+          <a href="/privacy" target="_blank" className="font-semibold underline">개인정보처리방침</a>과 영상·관절 데이터의 AI 분석에 동의합니다. (필수)
+        </ConsentCheckbox>
+        <ConsentCheckbox checked={age18Confirmed} onChange={setAge18Confirmed}>
+          만 18세 이상입니다. (필수)
+        </ConsentCheckbox>
+        <ConsentCheckbox checked={videoRightsConfirmed} onChange={setVideoRightsConfirmed}>
+          본인이 촬영했거나 업로드 권한이 있는 영상이며 제3자의 권리를 침해하지 않습니다. (필수)
+        </ConsentCheckbox>
+        <ConsentCheckbox checked={modelImprovementConsent} onChange={setModelImprovementConsent}>
+          판독 정확도 개선을 위한 데이터 활용에 동의합니다. 동의하지 않아도 분석할 수 있습니다. (선택)
+        </ConsentCheckbox>
+      </fieldset>
+
       <button
         onClick={submit}
         disabled={busy}
@@ -493,6 +534,28 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         </div>
       )}
     </section>
+  );
+}
+
+function ConsentCheckbox({
+  checked,
+  onChange,
+  children,
+}: {
+  checked: boolean;
+  onChange: (value: boolean) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2 text-[11px] leading-relaxed text-fairway-700">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        className="mt-0.5 h-4 w-4 rounded border-fairway-300 text-fairway-700"
+      />
+      <span>{children}</span>
+    </label>
   );
 }
 

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 
 export const OWNER_COOKIE = "golf_owner";
+export const PILOT_COOKIE = "golf_pilot";
 
 function secret(): string {
   const value = process.env.SESSION_SECRET;
@@ -14,6 +15,20 @@ function secret(): string {
 
 function signature(userId: string): string {
   return crypto.createHmac("sha256", secret()).update(userId).digest("base64url");
+}
+
+function pilotSignature(): string {
+  return crypto.createHmac("sha256", secret()).update("pilot-access-v1").digest("base64url");
+}
+
+function cookieValue(request: Request, name: string): string | null {
+  const cookie = request.headers.get("cookie") ?? "";
+  const value = cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
+  return value ? decodeURIComponent(value) : null;
 }
 
 export function createOwnerToken(userId = uuidv4()): string {
@@ -35,13 +50,7 @@ export function verifyOwnerToken(token: string | null | undefined): string | nul
 }
 
 export function ownerIdFromRequest(request: Request): string | null {
-  const cookie = request.headers.get("cookie") ?? "";
-  const value = cookie
-    .split(";")
-    .map((part) => part.trim())
-    .find((part) => part.startsWith(`${OWNER_COOKIE}=`))
-    ?.slice(OWNER_COOKIE.length + 1);
-  return verifyOwnerToken(value ? decodeURIComponent(value) : null);
+  return verifyOwnerToken(cookieValue(request, OWNER_COOKIE));
 }
 
 export const ownerCookieOptions = {
@@ -51,3 +60,34 @@ export const ownerCookieOptions = {
   path: "/",
   maxAge: 60 * 60 * 24 * 365,
 };
+
+export const pilotCookieOptions = {
+  ...ownerCookieOptions,
+  maxAge: 60 * 60 * 24 * 30,
+};
+
+export function pilotAccessRequired(): boolean {
+  return process.env.PILOT_ACCESS_REQUIRED === "true" || process.env.NODE_ENV === "production";
+}
+
+export function hasPilotAccess(request: Request): boolean {
+  if (!pilotAccessRequired()) return true;
+  const supplied = cookieValue(request, PILOT_COOKIE);
+  const expected = pilotSignature();
+  if (!supplied) return false;
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+export function verifyPilotAccessCode(accessCode: string | null | undefined): boolean {
+  if (!pilotAccessRequired()) return true;
+  const expectedHex = process.env.PILOT_ACCESS_CODE_SHA256?.trim().toLowerCase() ?? "";
+  if (!/^[0-9a-f]{64}$/.test(expectedHex) || !accessCode) return false;
+  const suppliedHex = crypto.createHash("sha256").update(accessCode).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(suppliedHex), Buffer.from(expectedHex));
+}
+
+export function createPilotAccessToken(): string {
+  return pilotSignature();
+}

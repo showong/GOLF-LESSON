@@ -3,15 +3,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { v4 as uuidv4 } from "uuid";
-import ffmpegPathImport from "ffmpeg-static";
 import {
   VIDEO_VIEW_LABEL,
   type VideoQualityReport,
   type VideoView,
 } from "./types";
 
-// ffmpeg-static은 default export로 binary 경로 문자열을 줌(미지원 플랫폼은 null).
-const ffmpegPath = ffmpegPathImport as unknown as string | null;
+const FFMPEG_PATH =
+  process.env.FFMPEG_PATH?.trim() || (process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
+const FFMPEG_PROBE_TIMEOUT_MS = 15_000;
+const FFMPEG_FRAME_TIMEOUT_MS = Number(process.env.FFMPEG_FRAME_TIMEOUT_MS ?? 45_000);
+const FFMPEG_MOTION_TIMEOUT_MS = Number(process.env.FFMPEG_MOTION_TIMEOUT_MS ?? 120_000);
 
 export interface ExtractedFrame {
   /** 영상 시점 (측면/정면) */
@@ -45,10 +47,63 @@ const PHASES: { ratio: number; phase: SwingPhase; label: string }[] = [
 ];
 
 function ensureBinary(): string {
-  if (!ffmpegPath) {
-    throw new Error("ffmpeg-static 바이너리를 찾지 못했습니다. 이 플랫폼은 지원되지 않습니다.");
+  return FFMPEG_PATH;
+}
+
+function attachProcessTimeout(
+  proc: ReturnType<typeof spawn>,
+  timeoutMs: number,
+  label: string,
+  reject: (reason?: unknown) => void,
+) {
+  const timer = setTimeout(() => {
+    proc.kill("SIGKILL");
+    reject(new Error(`${label} 시간 제한(${timeoutMs}ms)을 초과했습니다.`));
+  }, timeoutMs);
+  timer.unref();
+  return () => clearTimeout(timer);
+}
+
+function captureFfmpeg(args: string[], timeoutMs: number): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ensureBinary(), args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    const clear = attachProcessTimeout(proc, timeoutMs, "ffmpeg", reject);
+    proc.stdout.on("data", (chunk) => {
+      if (stdout.length < 2 * 1024 * 1024) stdout += chunk.toString();
+    });
+    proc.stderr.on("data", (chunk) => {
+      if (stderr.length < 2 * 1024 * 1024) stderr += chunk.toString();
+    });
+    proc.on("error", (error) => {
+      clear();
+      reject(error);
+    });
+    proc.on("close", (code) => {
+      clear();
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-500)}`));
+    });
+  });
+}
+
+/** Worker 시작 시 배포 바이너리의 기능과 LGPL 전용 구성을 확인한다. */
+export async function assertFfmpegRuntime(): Promise<void> {
+  const [{ stdout: versionOut }, { stdout: filtersOut }] = await Promise.all([
+    captureFfmpeg(["-version"], FFMPEG_PROBE_TIMEOUT_MS),
+    captureFfmpeg(["-hide_banner", "-filters"], FFMPEG_PROBE_TIMEOUT_MS),
+  ]);
+  if (process.env.NODE_ENV === "production" && process.env.REQUIRE_LGPL_FFMPEG !== "false") {
+    if (versionOut.includes("--enable-gpl") || versionOut.includes("--enable-nonfree")) {
+      throw new Error("운영 FFmpeg는 GPL/nonfree 옵션이 없는 검증된 LGPL 빌드여야 합니다.");
+    }
   }
-  return ffmpegPath;
+  for (const filter of ["scale", "signalstats", "metadata"]) {
+    if (!new RegExp(`\\b${filter}\\b`).test(filtersOut)) {
+      throw new Error(`FFmpeg 필수 필터가 없습니다: ${filter}`);
+    }
+  }
 }
 
 export interface VideoMetadata {
@@ -62,11 +117,16 @@ export async function inspectVideoMetadata(filePath: string): Promise<VideoMetad
   return new Promise((resolve, reject) => {
     const proc = spawn(ensureBinary(), ["-hide_banner", "-i", filePath]);
     let stderr = "";
+    const clear = attachProcessTimeout(proc, FFMPEG_FRAME_TIMEOUT_MS, "영상 메타데이터 검사", reject);
     proc.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    proc.on("error", reject);
+    proc.on("error", (error) => {
+      clear();
+      reject(error);
+    });
     proc.on("close", () => {
+      clear();
       // ffmpeg는 출력 미지정 시 비정상 종료하지만 Duration은 stderr에 찍힘.
       const match = stderr.match(/Duration:\s*(\d+):(\d+):([\d.]+)/);
       if (!match) {
@@ -88,6 +148,32 @@ export async function inspectVideoMetadata(filePath: string): Promise<VideoMetad
       });
     });
   });
+}
+
+export async function assertVideoSafeForAnalysis(filePath: string): Promise<VideoMetadata> {
+  const metadata = await inspectVideoMetadata(filePath);
+  const maxDuration = Number(process.env.MAX_VIDEO_DURATION_SECONDS ?? 45);
+  const maxPixels = Number(process.env.MAX_VIDEO_PIXELS ?? 3840 * 2160);
+  if (
+    !Number.isFinite(metadata.durationSec) ||
+    metadata.durationSec < 0.5 ||
+    metadata.durationSec > maxDuration
+  ) {
+    throw new Error(`영상 길이는 0.5초 이상 ${maxDuration}초 이하여야 합니다.`);
+  }
+  if (
+    !Number.isInteger(metadata.width) ||
+    !Number.isInteger(metadata.height) ||
+    metadata.width < 160 ||
+    metadata.height < 160 ||
+    metadata.width * metadata.height > maxPixels
+  ) {
+    throw new Error("영상 해상도가 허용 범위를 벗어났습니다.");
+  }
+  if (!Number.isFinite(metadata.fps) || metadata.fps < 1 || metadata.fps > 240) {
+    throw new Error("영상 프레임 속도가 허용 범위를 벗어났습니다.");
+  }
+  return metadata;
 }
 
 export function technicalQualityReport(
@@ -145,14 +231,23 @@ export async function analyzeMotion(
       "-",
     ]);
     let out = "";
+    let stderr = "";
+    const clear = attachProcessTimeout(proc, FFMPEG_MOTION_TIMEOUT_MS, "영상 모션 분석", reject);
     proc.stdout.on("data", (chunk) => {
       // 30초 60fps 상한에서도 수 MB 수준이지만 폭주 방지 캡
       if (out.length < 16 * 1024 * 1024) out += chunk.toString();
     });
-    proc.on("error", reject);
+    proc.stderr.on("data", (chunk) => {
+      if (stderr.length < 512 * 1024) stderr += chunk.toString();
+    });
+    proc.on("error", (error) => {
+      clear();
+      reject(error);
+    });
     proc.on("close", (code) => {
+      clear();
       if (code === 0) resolve(out);
-      else reject(new Error(`ffmpeg motion analysis exit ${code}`));
+      else reject(new Error(`ffmpeg motion analysis exit ${code}: ${stderr.slice(-500)}`));
     });
   });
 
@@ -253,11 +348,16 @@ async function extractSingleFrame(
       outPath,
     ]);
     let stderr = "";
+    const clear = attachProcessTimeout(proc, FFMPEG_FRAME_TIMEOUT_MS, "프레임 추출", reject);
     proc.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
-    proc.on("error", reject);
+    proc.on("error", (error) => {
+      clear();
+      reject(error);
+    });
     proc.on("close", (code) => {
+      clear();
       if (code === 0) resolve();
       else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-500)}`));
     });

@@ -12,6 +12,18 @@ import { GRADE_ORDER } from "./types";
 
 type UserRow = { id: string; nickname: string };
 
+export const TERMS_VERSION = "2026-07-17";
+export const PRIVACY_VERSION = "2026-07-17";
+
+export interface UserConsentInput {
+  termsAccepted: boolean;
+  privacyAccepted: boolean;
+  serviceAnalysisAccepted: boolean;
+  age18Confirmed: boolean;
+  videoRightsConfirmed: boolean;
+  modelImprovementConsent: boolean;
+}
+
 function iso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -41,6 +53,54 @@ export async function getOrCreateUser(
     [userId, clean],
   );
   return result.rows[0];
+}
+
+export async function recordUserConsent(userId: string, input: UserConsentInput): Promise<void> {
+  if (
+    !input.termsAccepted ||
+    !input.privacyAccepted ||
+    !input.serviceAnalysisAccepted ||
+    !input.age18Confirmed ||
+    !input.videoRightsConfirmed
+  ) {
+    throw new Error("필수 이용 동의와 영상 권리 확인이 필요합니다.");
+  }
+  await query(
+    `INSERT INTO user_consents
+       (user_id, terms_version, privacy_version, terms_accepted, privacy_accepted,
+        service_analysis_accepted, age_18_confirmed, video_rights_confirmed,
+        model_improvement_consent)
+     VALUES ($1, $2, $3, TRUE, TRUE, TRUE, TRUE, TRUE, $4)
+     ON CONFLICT (user_id) DO UPDATE SET
+       terms_version = EXCLUDED.terms_version,
+       privacy_version = EXCLUDED.privacy_version,
+       terms_accepted = TRUE,
+       privacy_accepted = TRUE,
+       service_analysis_accepted = TRUE,
+       age_18_confirmed = TRUE,
+       video_rights_confirmed = TRUE,
+       model_improvement_consent = EXCLUDED.model_improvement_consent,
+       updated_at = NOW(),
+       withdrawn_at = CASE WHEN EXCLUDED.model_improvement_consent THEN NULL ELSE NOW() END`,
+    [userId, TERMS_VERSION, PRIVACY_VERSION, input.modelImprovementConsent],
+  );
+}
+
+export async function hasCurrentRequiredConsent(userId: string): Promise<boolean> {
+  const result = await query<{ ok: boolean }>(
+    `SELECT (
+       terms_version = $2 AND privacy_version = $3
+       AND terms_accepted AND privacy_accepted AND service_analysis_accepted
+       AND age_18_confirmed AND video_rights_confirmed
+     ) AS ok
+     FROM user_consents WHERE user_id = $1`,
+    [userId, TERMS_VERSION, PRIVACY_VERSION],
+  );
+  return result.rows[0]?.ok === true;
+}
+
+export async function deleteUserRecord(userId: string): Promise<void> {
+  await query("DELETE FROM users WHERE id = $1", [userId]);
 }
 
 export async function saveAnalysis(
@@ -74,6 +134,13 @@ export async function saveAnalysis(
     oneLineSummary: analysis.oneLineSummary,
     analysis,
   };
+}
+
+export async function deleteAnalysisForUser(
+  userId: string,
+  analysisId: string,
+): Promise<void> {
+  await query("DELETE FROM analyses WHERE id = $1 AND user_id = $2", [analysisId, userId]);
 }
 
 type Row = {
@@ -112,6 +179,20 @@ export async function getAnalysisForUser(
     [analysisId, userId],
   );
   return result.rows[0] ? rowToRecord(result.rows[0]) : null;
+}
+
+export async function updateAnalysisRecommendations(
+  userId: string,
+  analysisId: string,
+  recommendations: SwingAnalysis["recommendations"],
+): Promise<void> {
+  await query(
+    `UPDATE analyses
+     SET analysis_json = jsonb_set(analysis_json, '{recommendations}', $3::jsonb, TRUE),
+         youtube_refreshed_at = NOW()
+     WHERE id = $1 AND user_id = $2`,
+    [analysisId, userId, JSON.stringify(recommendations ?? [])],
+  );
 }
 
 export async function listHistory(userId: string): Promise<AnalysisRecord[]> {

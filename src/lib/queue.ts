@@ -54,3 +54,14 @@ export async function closeQueue() {
   queue = null;
   connection = null;
 }
+
+export async function checkQueueHealth(): Promise<void> {
+  if (!shouldUseRedisQueue()) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("운영 환경에서는 Redis 작업 큐가 필요합니다.");
+    }
+    return;
+  }
+  const pong = await redisConnection().ping();
+  if (pong !== "PONG") throw new Error("Redis ping 응답이 올바르지 않습니다.");
+}

@@ -9,5 +9,5 @@ export default defineConfig([
     // URL/File 상태를 외부 브라우저 API와 동기화하는 기존 효과 패턴은 의도적이다.
     rules: { "react-hooks/set-state-in-effect": "off" },
   },
-  globalIgnores([".next/**", "node_modules/**", "coverage/**"]),
+  globalIgnores([".next/**", "node_modules/**", "dist/**", ".artifacts/**", "coverage/**"]),
 ]);

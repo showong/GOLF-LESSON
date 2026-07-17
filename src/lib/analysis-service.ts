@@ -4,12 +4,14 @@ import path from "node:path";
 import { v4 as uuidv4 } from "uuid";
 import {
   computeDelta,
+  deleteAnalysisForUser,
   getAnalysisForUser,
   getUserById,
   previousForClub,
   recentRecordsForClub,
   recentSummaryForClub,
   saveAnalysis,
+  updateAnalysisRecommendations,
 } from "./db";
 import {
   claimJob,
@@ -20,9 +22,11 @@ import {
   type AnalysisJobPayload,
 } from "./deployment-db";
 import { analyzeSwingSession, analyzeSwingVideo, type PreviousAnalysisContext } from "./gemini";
+import { assertVideoSafeForAnalysis } from "./frames";
 import { validatePoseTrack, type PoseTrack } from "./pose";
 import { materializeVideo } from "./storage";
 import { findRecommendations } from "./youtube";
+import { youtubeRecommendationsEnabled } from "./runtime-config";
 import { getCoach, HEAD_COACH } from "./coaches";
 import {
   CLUB_LABEL,
@@ -96,6 +100,7 @@ async function executeAnalysis(userId: string, nickname: string, payload: Analys
         return { ...video, filePath };
       }),
     );
+    await Promise.all(localVideos.map((video) => assertVideoSafeForAnalysis(video.filePath)));
 
     const history = (
       await Promise.all(
@@ -143,17 +148,6 @@ async function executeAnalysis(userId: string, nickname: string, payload: Analys
             previousByClub,
           });
 
-    try {
-      analysis.recommendations = await findRecommendations({
-        clubType: analysis.clubType,
-        grade: analysis.grade,
-        topFocus: analysis.topFocus,
-        weaknesses: analysis.weaknesses,
-      });
-    } catch (error) {
-      console.warn("YouTube 추천 영상 검색 실패:", error);
-      analysis.recommendations = [];
-    }
     const record = await saveAnalysis(userId, analysis);
     await Promise.all(localVideos.map((video) => setVideoStatus(video.id, "ready")));
     return record;
@@ -172,7 +166,26 @@ export async function processAnalysisJob(jobId: string) {
   }
   try {
     const record = await executeAnalysis(user.id, user.nickname, job.payload);
-    await completeJob(job.id, record.id);
+    const completed = await completeJob(job.id, record.id);
+    if (!completed) {
+      // 제한 시간을 넘겨 이미 실패 처리된 작업이 뒤늦게 결과를 남기지 않도록 정리한다.
+      await deleteAnalysisForUser(user.id, record.id);
+      return;
+    }
+    // 핵심 분석은 먼저 완료 처리한다. 추천 API의 지연·장애는 분석 성공 여부에 영향을 주지 않는다.
+    if (youtubeRecommendationsEnabled()) {
+      try {
+        const recommendations = await findRecommendations({
+          clubType: record.analysis.clubType,
+          grade: record.analysis.grade,
+          topFocus: record.analysis.topFocus,
+          weaknesses: record.analysis.weaknesses,
+        });
+        await updateAnalysisRecommendations(user.id, record.id, recommendations);
+      } catch (error) {
+        console.warn("YouTube 추천 영상 비동기 보강 실패:", error);
+      }
+    }
   } catch (error) {
     await Promise.all(job.payload.videos.map((video) => setVideoStatus(video.id, "failed")));
     const message = error instanceof Error ? error.message : "분석 중 오류가 발생했습니다.";

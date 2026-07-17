@@ -56,8 +56,15 @@ export default function RootLayout({
           {children}
         </main>
         <footer className="mx-auto max-w-5xl px-4 py-6 text-xs text-fairway-700/60 safe-pb sm:px-6 sm:py-8">
-          영상과 분석 기록은 사용자 ID별 비공개 저장소에 분리 보관되어 과거 스윙과
-          숙제 이행 변화를 확인하는 데 사용돼요.
+          <p>
+            영상과 분석 기록은 사용자 ID별 비공개 저장소에 분리 보관되어 과거 스윙과
+            숙제 이행 변화를 확인하는 데 사용돼요.
+          </p>
+          <nav className="mt-2 flex flex-wrap gap-x-4 gap-y-1" aria-label="법적 고지와 데이터 관리">
+            <a href="/terms" className="underline">이용약관</a>
+            <a href="/privacy" className="underline">개인정보처리방침</a>
+            <a href="/settings" className="underline">데이터 관리</a>
+          </nav>
         </footer>
       </body>
     </html>

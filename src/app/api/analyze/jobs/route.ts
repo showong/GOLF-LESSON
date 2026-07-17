@@ -9,6 +9,7 @@ import {
   type AnalysisJobPayload,
 } from "@/lib/deployment-db";
 import { ownerIdFromRequest } from "@/lib/identity";
+import { hasCurrentRequiredConsent } from "@/lib/db";
 import { validatePoseTrack } from "@/lib/pose";
 import { enqueueAnalysis } from "@/lib/queue";
 import { verifyStoredVideo } from "@/lib/storage";
@@ -32,6 +33,9 @@ function validateClub(value: unknown): ClubType | undefined {
 export async function POST(request: Request) {
   const userId = ownerIdFromRequest(request);
   if (!userId) return NextResponse.json({ error: "사용자 세션이 필요합니다." }, { status: 401 });
+  if (!(await hasCurrentRequiredConsent(userId))) {
+    return NextResponse.json({ error: "최신 이용 동의가 필요합니다." }, { status: 403 });
+  }
   const contentLength = Number(request.headers.get("content-length") ?? 0);
   if (contentLength > 7 * 1024 * 1024) {
     return NextResponse.json({ error: "분석 요청 정보가 너무 큽니다." }, { status: 413 });

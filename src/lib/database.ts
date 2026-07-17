@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
-import path from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
+import { LOCAL_MIGRATIONS } from "./local-migrations.generated";
 
 type QueryResult<T> = { rows: T[]; rowCount: number | null };
 type QueryExecutor = {
@@ -42,30 +42,19 @@ function getPool(): Pool {
 async function migrateLocal(db: PGlite) {
   // 런타임 번들러가 migrations 디렉터리 밖까지 동적으로 추적하지 않도록
   // 로컬 자동 적용 목록은 명시적으로 관리한다. 운영 스크립트는 디렉터리를 직접 탐색한다.
-  const migrations = [
-    {
-      name: "0001_deployment_foundation.sql",
-      filePath: path.join(
-        /*turbopackIgnore: true*/ process.cwd(),
-        "migrations",
-        "0001_deployment_foundation.sql",
-      ),
-    },
-  ];
   await db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
   );
-  for (const migration of migrations) {
+  for (const migration of LOCAL_MIGRATIONS) {
     const applied = await db.query<{ name: string }>(
       "SELECT name FROM schema_migrations WHERE name = $1",
       [migration.name],
     );
     if (applied.rows.length > 0) continue;
-    const sql = await fs.readFile(/*turbopackIgnore: true*/ migration.filePath, "utf8");
     // PGlite의 Node 파일/메모리 VFS는 여러 DDL을 감싼 초기 트랜잭션이 간헐적으로
     // 정체될 수 있다. 로컬 마이그레이션은 모두 IF NOT EXISTS로 멱등적이므로 순차 적용한다.
     // 운영 PostgreSQL 마이그레이션은 scripts/migrate.ts에서 트랜잭션으로 실행된다.
-    await db.exec(sql);
+    await db.exec(migration.sql);
     await db.query(
       "INSERT INTO schema_migrations(name) VALUES ($1) ON CONFLICT (name) DO NOTHING",
       [migration.name],
@@ -80,7 +69,7 @@ async function getLocalDb(): Promise<PGlite> {
   if (!localDb) {
     const dataDir = process.env.PGLITE_DATA_DIR ?? "./data/pglite";
     if (!dataDir.startsWith("memory://")) {
-      await fs.mkdir(path.dirname(path.resolve(dataDir)), { recursive: true });
+      await fs.mkdir(/*turbopackIgnore: true*/ dataDir, { recursive: true });
     }
     localDb = new PGlite(dataDir);
   }

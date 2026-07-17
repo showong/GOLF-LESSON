@@ -3,9 +3,18 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadBucketCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { VideoRow } from "./deployment-db";
+
+let storageHealthCheckedAt = 0;
 
 function isS3Mode() {
   return (
@@ -122,6 +131,29 @@ export async function materializeVideo(video: VideoRow, destination: string) {
   );
   if (!response.Body) throw new Error("Bucket에서 영상 본문을 받지 못했습니다.");
   await pipeline(response.Body as NodeJS.ReadableStream, fs.createWriteStream(destination));
+}
+
+export async function deleteStoredVideo(video: VideoRow): Promise<void> {
+  if (!isS3Mode()) {
+    await fsp.unlink(/*turbopackIgnore: true*/ localObjectPath(video.objectKey)).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    });
+    return;
+  }
+  await s3Client().send(new DeleteObjectCommand({ Bucket: bucketName(), Key: video.objectKey }));
+}
+
+export async function checkStorageHealth(): Promise<void> {
+  if (!isS3Mode()) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("운영 환경에서는 로컬 저장소를 사용할 수 없습니다.");
+    }
+    await fsp.mkdir(/*turbopackIgnore: true*/ localBaseDir(), { recursive: true });
+    return;
+  }
+  if (Date.now() - storageHealthCheckedAt < 30_000) return;
+  await s3Client().send(new HeadBucketCommand({ Bucket: bucketName() }));
+  storageHealthCheckedAt = Date.now();
 }
 
 export function storageMode() {
