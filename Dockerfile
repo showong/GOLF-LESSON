@@ -45,6 +45,15 @@ RUN npm run build \
   && npm run test \
   && npm run license:check
 
+FROM node:22.14-bookworm-slim AS prod-deps
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev \
+  && npm cache clean --force
+
+
+
 FROM node:22.14-bookworm-slim AS runtime
 WORKDIR /app
 
@@ -65,6 +74,9 @@ COPY --from=build --chown=nextjs:nodejs /app/public ./public
 COPY --from=build --chown=nextjs:nodejs /app/dist ./dist
 COPY --from=build --chown=nextjs:nodejs /app/migrations ./migrations
 COPY --from=build --chown=nextjs:nodejs /app/LICENSE /app/THIRD_PARTY_NOTICES.md ./
+COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=prod-deps --chown=nextjs:nodejs /app/package.json ./package.json
 
 USER nextjs
 EXPOSE 3000
