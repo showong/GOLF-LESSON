@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 const isDevelopment = process.env.NODE_ENV === "development";
+const mediapipeWasmSource =
+  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm/";
 
 const nextConfig = {
   serverExternalPackages: [
@@ -47,12 +49,12 @@ const nextConfig = {
       "form-action 'self'",
       "frame-ancestors 'none'",
       "object-src 'none'",
-      `script-src ${scriptPolicy.join(" ")}`,
+      `script-src ${scriptPolicy.join(" ")} ${mediapipeWasmSource}`,
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https://i.ytimg.com",
       "media-src 'self' blob:",
       "connect-src 'self' https://cdn.jsdelivr.net https://storage.googleapis.com",
-      "worker-src 'self' blob:",
+      `worker-src 'self' blob: ${mediapipeWasmSource}`,
     ];
     if (!isDevelopment) contentSecurityPolicyDirectives.push("upgrade-insecure-requests");
     const contentSecurityPolicy = contentSecurityPolicyDirectives.join("; ");

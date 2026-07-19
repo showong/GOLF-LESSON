@@ -15,13 +15,55 @@ import type { VideoView } from "./types";
 // 오프라인/차단 환경에서는 로드 실패 → null 폴백이 정상 동작.
 const WASM_BASE =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
-const MODEL_URL =
+const MODEL_LITE_URL =
   "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+const MODEL_FULL_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
 
-/** 샘플링 상한: 15fps · 최대 240프레임 (16초 분량) */
-const TARGET_FPS = 15;
+/** 샘플링 상한: 기본 15fps · 최대 240프레임 (16초 분량) */
+const STANDARD_TARGET_FPS = 15;
+const COMPATIBILITY_TARGET_FPS = 10;
 const MAX_FRAMES = 240;
-const EXTRACTION_TIMEOUT_MS = 45_000;
+const STANDARD_TIMEOUT_MS = 45_000;
+const COMPATIBILITY_TIMEOUT_MS = 75_000;
+const VIDEO_LOAD_TIMEOUT_MS = 10_000;
+const VIDEO_SEEK_TIMEOUT_MS = 4_000;
+
+export interface PoseExtractionOptions {
+  /** 1 이상이면 Safari·GPU 호환성용 CPU/full-model 경로를 사용한다. */
+  retryAttempt?: number;
+}
+
+export interface PoseExtractionProfile {
+  mode: "standard" | "compatibility";
+  targetFps: number;
+  timeoutMs: number;
+}
+
+export function getPoseExtractionProfile(retryAttempt = 0): PoseExtractionProfile {
+  return retryAttempt > 0
+    ? {
+        mode: "compatibility",
+        targetFps: COMPATIBILITY_TARGET_FPS,
+        timeoutMs: COMPATIBILITY_TIMEOUT_MS,
+      }
+    : {
+        mode: "standard",
+        targetFps: STANDARD_TARGET_FPS,
+        timeoutMs: STANDARD_TIMEOUT_MS,
+      };
+}
+
+/**
+ * 첫 프레임(0초)은 Safari에서 seeked 이벤트가 생략될 수 있어 각 구간의 중앙을 샘플링한다.
+ */
+export function buildPoseSampleTimes(duration: number, retryAttempt = 0): number[] {
+  if (!Number.isFinite(duration) || duration <= 0) return [];
+  const { targetFps } = getPoseExtractionProfile(retryAttempt);
+  const frameCount = Math.min(MAX_FRAMES, Math.max(1, Math.ceil(duration * targetFps)));
+  const step = duration / frameCount;
+  return Array.from({ length: frameCount }, (_, index) => (index + 0.5) * step);
+}
 
 export type PoseFailureCode =
   | "unsupported-browser"
@@ -38,6 +80,7 @@ export interface PoseExtractionResult {
   attemptedFrames: number;
   detectedFrames: number;
   delegate: "GPU" | "CPU" | null;
+  mode?: PoseExtractionProfile["mode"];
   failure?: {
     code: PoseFailureCode;
     message: string;
@@ -75,31 +118,44 @@ async function getFileset() {
   }
 }
 
-async function createLandmarker(): Promise<{
+async function createLandmarker(retryAttempt = 0): Promise<{
   landmarker: Landmarker;
   delegate: "GPU" | "CPU";
 }> {
   const vision = await import("@mediapipe/tasks-vision");
   const fileset = await getFileset();
+  const compatibilityMode = retryAttempt > 0;
+  const modelAssetPath = compatibilityMode ? MODEL_FULL_URL : MODEL_LITE_URL;
+  const confidence = compatibilityMode ? 0.25 : 0.35;
   let gpuError: unknown;
 
-  try {
-    const landmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: "GPU" },
-      runningMode: "VIDEO",
-      numPoses: 1,
-    });
-    return { landmarker: landmarker as Landmarker, delegate: "GPU" };
-  } catch (error) {
-    gpuError = error;
-    console.warn("MediaPipe GPU 초기화 실패, CPU로 재시도합니다:", error);
+  if (!compatibilityMode) {
+    try {
+      const landmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath, delegate: "GPU" },
+        runningMode: "VIDEO",
+        numPoses: 1,
+        minPoseDetectionConfidence: confidence,
+        minPosePresenceConfidence: confidence,
+        minTrackingConfidence: confidence,
+        outputSegmentationMasks: false,
+      });
+      return { landmarker: landmarker as Landmarker, delegate: "GPU" };
+    } catch (error) {
+      gpuError = error;
+      console.warn("MediaPipe GPU 초기화 실패, CPU로 재시도합니다:", error);
+    }
   }
 
   try {
     const landmarker = await vision.PoseLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: MODEL_URL, delegate: "CPU" },
+      baseOptions: { modelAssetPath, delegate: "CPU" },
       runningMode: "VIDEO",
       numPoses: 1,
+      minPoseDetectionConfidence: confidence,
+      minPosePresenceConfidence: confidence,
+      minTrackingConfidence: confidence,
+      outputSegmentationMasks: false,
     });
     return { landmarker: landmarker as Landmarker, delegate: "CPU" };
   } catch (cpuError) {
@@ -108,21 +164,57 @@ async function createLandmarker(): Promise<{
   }
 }
 
-function seekTo(video: HTMLVideoElement, t: number): Promise<void> {
+function waitForVideoReady(
+  video: HTMLVideoElement,
+  eventName: "loadedmetadata" | "loadeddata",
+  readyState: number,
+): Promise<void> {
+  if (video.readyState >= readyState) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const onSeeked = () => {
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      video.removeEventListener(eventName, onReady);
+      video.removeEventListener("error", onError);
+      if (error) reject(error);
+      else resolve();
+    };
+    const onReady = () => finish();
+    const onError = () => finish(new Error("video load error"));
+    const timer = window.setTimeout(
+      () => finish(new Error(`video load timeout (${eventName})`)),
+      VIDEO_LOAD_TIMEOUT_MS,
+    );
+    video.addEventListener(eventName, onReady);
+    video.addEventListener("error", onError);
+  });
+}
+
+function seekTo(video: HTMLVideoElement, t: number): Promise<void> {
+  const target = Math.max(0.001, Math.min(t, Math.max(0.001, video.duration - 0.001)));
+  if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && Math.abs(video.currentTime - target) < 0.001) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("error", onError);
-      resolve();
+      if (error) reject(error);
+      else window.setTimeout(resolve, 0);
     };
-    const onError = () => {
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("error", onError);
-      reject(new Error("video seek error"));
-    };
+    const onSeeked = () => finish();
+    const onError = () => finish(new Error("video seek error"));
+    const timer = window.setTimeout(
+      () => finish(new Error("video seek timeout")),
+      VIDEO_SEEK_TIMEOUT_MS,
+    );
     video.addEventListener("seeked", onSeeked);
     video.addEventListener("error", onError);
-    video.currentTime = t;
+    try {
+      video.currentTime = target;
+    } catch {
+      finish(new Error("video seek error"));
+    }
   });
 }
 
@@ -133,7 +225,10 @@ export async function extractPoseTrackDetailed(
   file: File,
   view: VideoView,
   onProgress?: (ratio: number) => void,
+  options: PoseExtractionOptions = {},
 ): Promise<PoseExtractionResult> {
+  const retryAttempt = Math.max(0, Math.trunc(options.retryAttempt ?? 0));
+  const profile = getPoseExtractionProfile(retryAttempt);
   const failed = (
     code: PoseFailureCode,
     message: string,
@@ -146,6 +241,7 @@ export async function extractPoseTrackDetailed(
     attemptedFrames,
     detectedFrames,
     delegate,
+    mode: profile.mode,
     failure: { code, message, retryable },
   });
 
@@ -156,7 +252,7 @@ export async function extractPoseTrackDetailed(
   let landmarker: Landmarker;
   let delegate: "GPU" | "CPU";
   try {
-    ({ landmarker, delegate } = await createLandmarker());
+    ({ landmarker, delegate } = await createLandmarker(retryAttempt));
   } catch (error) {
     console.warn("MediaPipe 모델을 불러오지 못했습니다:", error);
     return failed("model-load", "관절 모델을 불러오지 못했어요.", true);
@@ -167,42 +263,56 @@ export async function extractPoseTrackDetailed(
   video.muted = true;
   video.playsInline = true;
   video.preload = "auto";
-  video.src = url;
 
   const cleanup = () => {
-    video.src = "";
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
     URL.revokeObjectURL(url);
     landmarker.close?.();
   };
 
-  const deadline = Date.now() + EXTRACTION_TIMEOUT_MS;
+  const deadline = Date.now() + profile.timeoutMs;
   let attemptedFrames = 0;
   let detectedFrames = 0;
   let timedOut = false;
 
   try {
-    await new Promise<void>((resolve, reject) => {
-      video.addEventListener("loadedmetadata", () => resolve(), { once: true });
-      video.addEventListener("error", () => reject(new Error("video load error")), {
-        once: true,
-      });
-    });
+    const metadataReady = waitForVideoReady(
+      video,
+      "loadedmetadata",
+      HTMLMediaElement.HAVE_METADATA,
+    );
+    video.src = url;
+    video.load();
+    await metadataReady;
+    await waitForVideoReady(video, "loadeddata", HTMLMediaElement.HAVE_CURRENT_DATA);
 
     const duration = video.duration;
     if (!Number.isFinite(duration) || duration < 0.5) {
       return failed("video-too-short", "영상이 너무 짧거나 길이를 확인할 수 없어요.", false, 0, 0, delegate);
     }
 
-    const step = Math.max(1 / TARGET_FPS, duration / MAX_FRAMES);
+    const sampleTimes = buildPoseSampleTimes(duration, retryAttempt);
     const frames: PoseFrame[] = [];
+    let consecutiveSeekFailures = 0;
 
-    for (let t = 0; t < duration; t += step) {
+    for (let index = 0; index < sampleTimes.length; index++) {
+      const t = sampleTimes[index];
       if (Date.now() > deadline) {
         console.warn("포즈 추출 시간 초과, 부분 결과 사용");
         timedOut = true;
         break;
       }
-      await seekTo(video, Math.min(t, Math.max(0, duration - 0.05)));
+      try {
+        await seekTo(video, t);
+        consecutiveSeekFailures = 0;
+      } catch (error) {
+        consecutiveSeekFailures += 1;
+        console.warn(`영상 프레임 이동 실패 (${index + 1}/${sampleTimes.length}):`, error);
+        if (consecutiveSeekFailures >= 3) throw error;
+        continue;
+      }
       attemptedFrames += 1;
       const result = landmarker.detectForVideo(video, Math.round(t * 1000));
       const lms = result.landmarks?.[0];
@@ -220,7 +330,7 @@ export async function extractPoseTrackDetailed(
           ),
         });
       }
-      onProgress?.(Math.min(1, t / duration));
+      onProgress?.((index + 1) / sampleTimes.length);
     }
 
     if (frames.length < 20) {
@@ -237,10 +347,15 @@ export async function extractPoseTrackDetailed(
     }
     onProgress?.(1);
     return {
-      track: { view, sampleFps: Math.round(1 / step), frames },
+      track: {
+        view,
+        sampleFps: Math.max(1, Math.round(sampleTimes.length / duration)),
+        frames,
+      },
       attemptedFrames,
       detectedFrames,
       delegate,
+      mode: profile.mode,
       ...(timedOut
         ? {
             failure: {

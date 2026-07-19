@@ -48,23 +48,29 @@ export default function VideoUpload({ nickname, pilotAccessCode, onResult }: Pro
     side: Promise<PoseExtractionResult> | null;
     front: Promise<PoseExtractionResult> | null;
   }>({ side: null, front: null });
+  const poseRetryRef = useRef<{ side: number; front: number }>({ side: 0, front: 0 });
   const [poseState, setPoseState] = useState<{ side: PoseState; front: PoseState }>({
     side: { status: "idle" },
     front: { status: "idle" },
   });
 
-  function startPoseExtraction(view: "side" | "front", file: File | null) {
+  function startPoseExtraction(view: "side" | "front", file: File | null, isRetry = false) {
     poseRef.current[view] = null;
     if (!file) {
       poseTaskRef.current[view] = null;
+      poseRetryRef.current[view] = 0;
       setPoseState((state) => ({ ...state, [view]: { status: "idle" } }));
       return;
     }
+    poseRetryRef.current[view] = isRetry ? poseRetryRef.current[view] + 1 : 0;
+    const retryAttempt = poseRetryRef.current[view];
     setPoseState((state) => ({ ...state, [view]: { status: "extracting" } }));
     // 초기 화면(SVG 가이드)은 MediaPipe 번들과 분리해 항상 렌더링한다.
     // 실제 영상이 선택된 시점에만 무거운 스켈레톤 모듈을 지연 로드한다.
     const task = import("@/lib/pose-client")
-      .then(({ extractPoseTrackDetailed }) => extractPoseTrackDetailed(file, view))
+      .then(({ extractPoseTrackDetailed }) =>
+        extractPoseTrackDetailed(file, view, undefined, { retryAttempt }),
+      )
       .catch(
         (): PoseExtractionResult => ({
           track: null,
@@ -505,7 +511,7 @@ export default function VideoUpload({ nickname, pilotAccessCode, onResult }: Pro
               · 측면샷: {sideFile.name} ({sizeMB(sideFile)}MB){" "}
               <PoseBadge
                 state={poseState.side}
-                onRetry={() => startPoseExtraction("side", sideFile)}
+                onRetry={() => startPoseExtraction("side", sideFile, true)}
               />
             </span>
           )}
@@ -514,7 +520,7 @@ export default function VideoUpload({ nickname, pilotAccessCode, onResult }: Pro
               · 정면샷: {frontFile.name} ({sizeMB(frontFile)}MB){" "}
               <PoseBadge
                 state={poseState.front}
-                onRetry={() => startPoseExtraction("front", frontFile)}
+                onRetry={() => startPoseExtraction("front", frontFile, true)}
               />
             </span>
           )}
@@ -750,6 +756,7 @@ function PoseBadge({ state, onRetry }: { state: PoseState; onRetry: () => void }
     return (
       <span className="ml-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800">
         스켈레톤 준비됨 ✓ · {detectedFrames}/{attemptedFrames}프레임 · {delegate}
+        {state.result.mode === "compatibility" ? " · 호환 모드" : ""}
         {failure?.code === "timeout" ? " (부분 결과)" : ""}
       </span>
     );

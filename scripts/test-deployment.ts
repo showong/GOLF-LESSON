@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 
 let failures = 0;
 function check(condition: boolean, label: string) {
@@ -38,6 +39,7 @@ const {
 } = await import("../src/lib/identity");
 const { LOCAL_MIGRATIONS } = await import("../src/lib/local-migrations.generated");
 const { productionConfigurationErrors } = await import("../src/lib/runtime-config");
+const require = createRequire(import.meta.url);
 
 try {
   console.log("\n[0] 로컬·운영 마이그레이션 일치");
@@ -45,6 +47,20 @@ try {
     const source = await fs.readFile(new URL(`../migrations/${migration.name}`, import.meta.url), "utf8");
     check(source.trim() === migration.sql.trim(), `${migration.name} 번들 사본 일치`);
   }
+
+  console.log("\n[0-1] MediaPipe 운영 CSP");
+  const nextConfig = require("../next.config.js") as {
+    headers: () => Promise<Array<{ headers: Array<{ key: string; value: string }> }>>;
+  };
+  const configuredHeaders = await nextConfig.headers();
+  const csp = configuredHeaders[0]?.headers.find(
+    (header) => header.key === "Content-Security-Policy",
+  )?.value;
+  const wasmSource =
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm/";
+  check(Boolean(csp?.includes(`script-src`) && csp.includes(wasmSource)), "MediaPipe WASM 로더 script-src 허용");
+  check(Boolean(csp?.includes(`worker-src`) && csp.includes(wasmSource)), "MediaPipe WASM Worker 허용");
+  check(Boolean(csp?.includes("media-src 'self' blob:")), "로컬 영상 blob 재생 허용");
 
   console.log("\n[1] 서명된 사용자 ID");
   const ownerId = randomUUID();

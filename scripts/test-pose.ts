@@ -12,6 +12,10 @@ import {
   type PoseFrame,
   type PoseTrack,
 } from "../src/lib/pose";
+import {
+  buildPoseSampleTimes,
+  getPoseExtractionProfile,
+} from "../src/lib/pose-client";
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -174,6 +178,26 @@ console.log("\n[4] 정량 지표 (상대 단위)");
     );
     check("cm 단위 없음 (모두 %·비율·도)", !JSON.stringify(m).includes("cm"));
   }
+}
+
+console.log("\n[5] 브라우저 포즈 샘플링·재시도 프로필");
+{
+  const duration = 4.041667;
+  const standardTimes = buildPoseSampleTimes(duration);
+  const retryTimes = buildPoseSampleTimes(duration, 1);
+  check("4초 영상은 기본 모드에서 20프레임 이상 샘플링", standardTimes.length >= 20);
+  check("Safari에서 멈출 수 있는 정확한 0초를 샘플링하지 않음", standardTimes[0] > 0);
+  check("마지막 샘플은 영상 길이보다 앞", standardTimes.at(-1)! < duration);
+  check(
+    "샘플 시간이 단조 증가",
+    standardTimes.every((time, index) => index === 0 || time > standardTimes[index - 1]),
+  );
+  check("재시도는 CPU용 저부하 샘플링 사용", retryTimes.length < standardTimes.length);
+  check(
+    "재시도는 호환 모드와 더 긴 제한 시간 사용",
+    getPoseExtractionProfile(1).mode === "compatibility" &&
+      getPoseExtractionProfile(1).timeoutMs > getPoseExtractionProfile(0).timeoutMs,
+  );
 }
 
 if (failures > 0) {
