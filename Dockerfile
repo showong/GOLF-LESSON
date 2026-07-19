@@ -4,7 +4,7 @@ ARG FFMPEG_VERSION=8.1.2
 ARG FFMPEG_SHA256=464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends build-essential ca-certificates curl xz-utils \
+  && apt-get install -y --no-install-recommends build-essential ca-certificates curl nasm xz-utils \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
