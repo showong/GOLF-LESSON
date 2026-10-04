@@ -2,6 +2,7 @@
   "name": "golf-lesson-tutor",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "description": "AI 골프 코치가 스크린골프 스윙 영상을 분석해 등급/단계별 맞춤 레슨을 제공하는 튜더 서비스",
   "scripts": {
     "dev": "next dev",
@@ -13,6 +14,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "worker": "tsx src/worker.ts",
     "retention": "tsx scripts/retention.ts",
+    "notices": "node scripts/generate-notices.mjs",
     "test:grading": "tsx scripts/test-grading.ts",
     "test:pose": "tsx scripts/test-pose.ts",
     "test:session": "tsx scripts/test-session.ts",
