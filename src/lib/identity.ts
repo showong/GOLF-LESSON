@@ -51,3 +51,25 @@ export const ownerCookieOptions = {
   path: "/",
   maxAge: 60 * 60 * 24 * 365,
 };
+
+/**
+ * 프록시가 덧붙인 X-Forwarded-For에서 클라이언트 IP를 읽는다. 클라이언트가 보낸 값은
+ * 왼쪽에 남으므로 신뢰하는 프록시 수(TRUSTED_PROXY_HOPS, Railway 기본 1)만큼 오른쪽에서 고른다.
+ */
+export function clientIpFromRequest(request: Request): string | null {
+  const hops = Number(process.env.TRUSTED_PROXY_HOPS ?? 1);
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (!forwarded || !Number.isInteger(hops) || hops < 1) return null;
+  const chain = forwarded
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return chain[Math.max(0, chain.length - hops)] ?? null;
+}
+
+/** 요청 제한용 IP 식별자. IP 원문 대신 서버 비밀키 HMAC만 저장한다. */
+export function clientKeyFromRequest(request: Request): string | null {
+  const ip = clientIpFromRequest(request);
+  if (!ip) return null;
+  return `ip:${crypto.createHmac("sha256", secret()).update(`ip:${ip}`).digest("base64url")}`;
+}

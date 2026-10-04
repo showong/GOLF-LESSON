@@ -24,7 +24,8 @@ const {
   getVideoForUser,
 } = await import("../src/lib/deployment-db");
 const { validateUploadBatch } = await import("../src/lib/upload-policy");
-const { createOwnerToken, verifyOwnerToken } = await import("../src/lib/identity");
+const { clientIpFromRequest, clientKeyFromRequest, createOwnerToken, verifyOwnerToken } =
+  await import("../src/lib/identity");
 
 try {
   console.log("\n[1] 서명된 사용자 ID");
@@ -66,7 +67,7 @@ try {
   }
   check(rejected, "허용되지 않은 MIME 차단");
 
-  console.log("\n[4] 요청 제한과 중복 작업 방지");
+  console.log("\n[4] 사용자별 요청 제한");
   await consumeRateLimit(userA.id, "analysis", 1, 60);
   let limited = false;
   try {
@@ -75,6 +76,37 @@ try {
     limited = true;
   }
   check(limited, "동일 윈도우의 초과 요청 차단");
+
+  console.log("\n[5] 쿠키와 무관한 IP·전체 제한");
+  const forged = new Request("http://localhost/", {
+    headers: { "x-forwarded-for": "6.6.6.6, 203.0.113.7" },
+  });
+  check(clientIpFromRequest(forged) === "203.0.113.7", "클라이언트가 위조한 왼쪽 IP 대신 프록시가 붙인 IP 사용");
+  const ipKey = clientKeyFromRequest(forged);
+  check(ipKey !== null && !ipKey.includes("203.0.113.7"), "IP 원문 대신 해시 저장");
+  const ipRule = { subject: ipKey!, limit: 1, windowSeconds: 60 };
+  const freshA = await getOrCreateUser(randomUUID(), "쿠키1");
+  const freshB = await getOrCreateUser(randomUUID(), "쿠키2");
+  await consumeRateLimit(freshA.id, "upload", 10, 60, [ipRule]);
+  let ipLimited = false;
+  try {
+    await consumeRateLimit(freshB.id, "upload", 10, 60, [ipRule]);
+  } catch (error) {
+    ipLimited = (error as Error & { code?: string }).code === "RATE_LIMITED";
+  }
+  check(ipLimited, "쿠키를 새로 만들어도 같은 IP의 초과 요청 차단");
+  const globalRule = { subject: "global", limit: 1, windowSeconds: 60, message: "전체 상한" };
+  const freshC = await getOrCreateUser(randomUUID(), "쿠키3");
+  await consumeRateLimit(freshA.id, "analysis", 10, 60, [globalRule]);
+  let globalMessage = "";
+  try {
+    await consumeRateLimit(freshC.id, "analysis", 10, 60, [globalRule]);
+  } catch (error) {
+    globalMessage = (error as Error).message;
+  }
+  check(globalMessage === "전체 상한", "서비스 전체 상한 초과 시 전용 안내 문구");
+
+  console.log("\n[6] 중복 작업 방지");
   const payload = {
     mode: "single" as const,
     videos: [

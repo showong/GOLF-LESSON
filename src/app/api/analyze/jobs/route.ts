@@ -11,6 +11,7 @@ import {
 import { ownerIdFromRequest } from "@/lib/identity";
 import { validatePoseTrack } from "@/lib/pose";
 import { enqueueAnalysis } from "@/lib/queue";
+import { analysisSharedLimits } from "@/lib/request-limits";
 import { verifyStoredVideo } from "@/lib/storage";
 import type { ClubType } from "@/lib/types";
 
@@ -100,6 +101,7 @@ export async function POST(request: Request) {
       "analysis",
       Number(process.env.ANALYSIS_REQUESTS_PER_HOUR ?? 12),
       60 * 60,
+      analysisSharedLimits(request),
     );
     const { job, created } = await createAnalysisJob(userId, idempotencyKey, payload);
     if (created) {

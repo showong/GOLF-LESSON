@@ -42,11 +42,26 @@ function videoFromRow(row: VideoDbRow): VideoRow {
   };
 }
 
+/** 사용자 ID와 무관하게 적용하는 제한(IP 해시별, 서비스 전체 등). */
+export interface SharedLimit {
+  subject: string;
+  limit: number;
+  windowSeconds: number;
+  message?: string;
+}
+
+function rateLimited(message: string): Error {
+  const error = new Error(message);
+  (error as Error & { code?: string }).code = "RATE_LIMITED";
+  return error;
+}
+
 export async function consumeRateLimit(
   userId: string,
   action: "upload" | "analysis",
   limit: number,
   windowSeconds: number,
+  shared: SharedLimit[] = [],
 ) {
   await withTransaction(async (db) => {
     // 사용자 행 잠금으로 같은 사용자의 병렬 요청이 제한을 우회하지 못하게 한다.
@@ -59,14 +74,32 @@ export async function consumeRateLimit(
       [userId, action, windowSeconds],
     );
     if (Number(count.rows[0]?.count ?? 0) >= limit) {
-      const error = new Error("요청이 너무 빠릅니다. 잠시 후 다시 시도해 주세요.");
-      (error as Error & { code?: string }).code = "RATE_LIMITED";
-      throw error;
+      throw rateLimited("요청이 너무 빠릅니다. 잠시 후 다시 시도해 주세요.");
+    }
+    for (const rule of shared) {
+      // 쿠키를 새로 만든 병렬 요청끼리는 사용자 행 잠금이 공유되지 않으므로
+      // 제한 대상별 advisory lock으로 직렬화한다.
+      await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`${action}:${rule.subject}`]);
+      const sharedCount = await db.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM shared_rate_limit_events
+         WHERE subject = $1 AND action = $2
+           AND created_at >= NOW() - ($3::text || ' seconds')::interval`,
+        [rule.subject, action, rule.windowSeconds],
+      );
+      if (Number(sharedCount.rows[0]?.count ?? 0) >= rule.limit) {
+        throw rateLimited(rule.message ?? "요청이 너무 빠릅니다. 잠시 후 다시 시도해 주세요.");
+      }
     }
     await db.query(
       "INSERT INTO rate_limit_events(id, user_id, action) VALUES ($1, $2, $3)",
       [uuidv4(), userId, action],
     );
+    for (const rule of shared) {
+      await db.query(
+        "INSERT INTO shared_rate_limit_events(id, subject, action) VALUES ($1, $2, $3)",
+        [uuidv4(), rule.subject, action],
+      );
+    }
   });
 }
 

@@ -43,15 +43,12 @@ async function migrateLocal(db: PGlite) {
   // 런타임 번들러가 migrations 디렉터리 밖까지 동적으로 추적하지 않도록
   // 로컬 자동 적용 목록은 명시적으로 관리한다. 운영 스크립트는 디렉터리를 직접 탐색한다.
   const migrations = [
-    {
-      name: "0001_deployment_foundation.sql",
-      filePath: path.join(
-        /*turbopackIgnore: true*/ process.cwd(),
-        "migrations",
-        "0001_deployment_foundation.sql",
-      ),
-    },
-  ];
+    "0001_deployment_foundation.sql",
+    "0002_shared_rate_limits.sql",
+  ].map((name) => ({
+    name,
+    filePath: path.join(/*turbopackIgnore: true*/ process.cwd(), "migrations", name),
+  }));
   await db.exec(
     "CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
   );

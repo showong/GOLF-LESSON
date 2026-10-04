@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { consumeRateLimit, createVideoReservations } from "@/lib/deployment-db";
 import { ownerIdFromRequest } from "@/lib/identity";
+import { uploadSharedLimits } from "@/lib/request-limits";
 import { createDirectUploadTarget } from "@/lib/storage";
 import { validateUploadBatch } from "@/lib/upload-policy";
 
@@ -17,6 +18,7 @@ export async function POST(request: Request) {
       "upload",
       Number(process.env.UPLOAD_REQUESTS_PER_MINUTE ?? 6),
       60,
+      uploadSharedLimits(request),
     );
     const videos = await createVideoReservations(userId, files);
     const uploads = await Promise.all(
