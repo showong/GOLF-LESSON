@@ -143,16 +143,20 @@ async function executeAnalysis(userId: string, nickname: string, payload: Analys
             previousByClub,
           });
 
-    try {
-      analysis.recommendations = await findRecommendations({
-        clubType: analysis.clubType,
-        grade: analysis.grade,
-        topFocus: analysis.topFocus,
-        weaknesses: analysis.weaknesses,
-      });
-    } catch (error) {
-      console.warn("YouTube 추천 영상 검색 실패:", error);
-      analysis.recommendations = [];
+    // YouTube API 정책(검색 결과 순서 보존, 30일 내 데이터 갱신·삭제, 브랜드 표시)을
+    // 충족하기 전까지는 기본 비활성화한다.
+    analysis.recommendations = [];
+    if (process.env.YOUTUBE_RECOMMENDATIONS_ENABLED === "true") {
+      try {
+        analysis.recommendations = await findRecommendations({
+          clubType: analysis.clubType,
+          grade: analysis.grade,
+          topFocus: analysis.topFocus,
+          weaknesses: analysis.weaknesses,
+        });
+      } catch (error) {
+        console.warn("YouTube 추천 영상 검색 실패:", error);
+      }
     }
     const record = await saveAnalysis(userId, analysis);
     await Promise.all(localVideos.map((video) => setVideoStatus(video.id, "ready")));

@@ -13,7 +13,8 @@
 - 🎥 **멀티 시점 영상 분석**: 측면샷(권장) + 정면샷(선택) 1~2개의 영상을 함께 업로드 가능.
   시점별 강점(측면=플레인/자세각, 정면=정렬/스웨이)을 활용해 더 정확한 분석.
 - 📺 **YouTube 추천 영상**: 헤드코치가 짚은 핵심 약점·포커스를 한국어 검색어로 변환해
-  YouTube Data API로 추천. 화이트리스트 채널(SBS골프·JTBC골프·골프존 등)이 상단 우선 표시.
+  YouTube Data API로 추천. **기본 비활성화** — YouTube API 정책(결과 순서 보존·30일 내 갱신·브랜드 표시)
+  대응 전까지 `YOUTUBE_RECOMMENDATIONS_ENABLED=true`일 때만 동작합니다.
 - 🎯 **클럽 자동 인식**: 어드레스/볼 위치/스윙 길이/티 사용 여부를 종합해
   드라이버·아이언·어프로치 중 하나로 판정.
 - 🏆 **등급 + 단계 판정**: 헤드코치 박상민이 골린이→아마추어→세미프로→프로
@@ -94,6 +95,7 @@ npm run dev:deploy
 | `BUCKET_*` 또는 `AWS_*` | Railway Bucket endpoint·bucket·access key·secret·region |
 | `MAX_UPLOAD_FILE_BYTES` | 영상 1개 최대 크기. 기본 80 MiB |
 | `MAX_UPLOAD_TOTAL_BYTES` | 요청 1회 총 업로드 크기. 기본 240 MiB |
+| `YOUTUBE_RECOMMENDATIONS_ENABLED` | `true`일 때만 추천 영상 검색 (기본 `false`) |
 | `YOUTUBE_API_KEY` | YouTube Data API v3 키 (선택 — 추천 영상 기능) |
 | `YOUTUBE_WHITELIST_CHANNEL_IDS` | 우선 표시할 채널 ID들 (선택, 쉼표 구분) |
 
