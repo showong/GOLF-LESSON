@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -56,8 +57,19 @@ export default function RootLayout({
           {children}
         </main>
         <footer className="mx-auto max-w-5xl px-4 py-6 text-xs text-fairway-700/60 safe-pb sm:px-6 sm:py-8">
-          영상과 분석 기록은 사용자 ID별 비공개 저장소에 분리 보관되어 과거 스윙과
-          숙제 이행 변화를 확인하는 데 사용돼요.
+          <p>
+            영상과 분석 기록은 사용자 ID별 비공개 저장소에 분리 보관되어 과거 스윙과
+            숙제 이행 변화를 확인하는 데 사용돼요. 코치는 모두 AI 가상 캐릭터이며
+            분석 결과는 참고용입니다.
+          </p>
+          <nav className="mt-3 flex gap-4 font-semibold text-fairway-700">
+            <Link href="/terms" className="underline underline-offset-2">
+              이용약관
+            </Link>
+            <Link href="/privacy" className="underline underline-offset-2">
+              개인정보처리방침
+            </Link>
+          </nav>
         </footer>
       </body>
     </html>

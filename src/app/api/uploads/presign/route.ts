@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+import { hasConsent } from "@/lib/db";
 import { consumeRateLimit, createVideoReservations } from "@/lib/deployment-db";
 import { ownerIdFromRequest } from "@/lib/identity";
+import { TERMS_VERSION } from "@/lib/legal";
 import { uploadSharedLimits } from "@/lib/request-limits";
 import { createDirectUploadTarget } from "@/lib/storage";
 import { validateUploadBatch } from "@/lib/upload-policy";
@@ -10,6 +12,12 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   const userId = ownerIdFromRequest(request);
   if (!userId) return NextResponse.json({ error: "사용자 세션이 필요합니다." }, { status: 401 });
+  if (!(await hasConsent(userId, TERMS_VERSION))) {
+    return NextResponse.json(
+      { error: "이용약관·개인정보처리방침 동의가 필요합니다.", code: "CONSENT_REQUIRED" },
+      { status: 403 },
+    );
+  }
   try {
     const body = (await request.json()) as { files?: unknown };
     const files = validateUploadBatch(body.files);

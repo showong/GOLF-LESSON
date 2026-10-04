@@ -43,6 +43,23 @@ export async function getOrCreateUser(
   return result.rows[0];
 }
 
+export async function recordConsent(userId: string, termsVersion: string): Promise<void> {
+  await query(
+    `UPDATE users SET consented_at = NOW(), consent_terms_version = $2, updated_at = NOW()
+     WHERE id = $1`,
+    [userId, termsVersion],
+  );
+}
+
+export async function hasConsent(userId: string, termsVersion: string): Promise<boolean> {
+  const result = await query<{ ok: boolean }>(
+    `SELECT (consented_at IS NOT NULL AND consent_terms_version = $2) AS ok
+     FROM users WHERE id = $1`,
+    [userId, termsVersion],
+  );
+  return result.rows[0]?.ok === true;
+}
+
 export async function saveAnalysis(
   userId: string,
   analysis: SwingAnalysis,

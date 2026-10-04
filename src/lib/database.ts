@@ -45,6 +45,7 @@ async function migrateLocal(db: PGlite) {
   const migrations = [
     "0001_deployment_foundation.sql",
     "0002_shared_rate_limits.sql",
+    "0003_user_consent.sql",
   ].map((name) => ({
     name,
     filePath: path.join(/*turbopackIgnore: true*/ process.cwd(), "migrations", name),

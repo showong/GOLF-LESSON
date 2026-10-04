@@ -5,6 +5,7 @@ import ViewGuideIllustration from "@/components/ViewGuide";
 import type { SkeletonSource } from "@/components/SkeletonPhaseStrip";
 import type { PoseTrack } from "@/lib/pose";
 import type { PoseExtractionResult } from "@/lib/pose-client";
+import { MINIMUM_AGE, TERMS_VERSION } from "@/lib/legal";
 
 interface Props {
   nickname: string;
@@ -16,6 +17,10 @@ type PoseStatus = "idle" | "extracting" | "ready" | "failed";
 type PoseState = { status: PoseStatus; result?: PoseExtractionResult };
 type UploadTab = "single" | "multi";
 type MultiSwing = { side: File | null; front: File | null };
+
+type ConsentState = { age: boolean; rights: boolean; terms: boolean };
+const CONSENT_KEY = "golf-tutor:consent-version";
+const NO_CONSENT: ConsentState = { age: false, rights: false, terms: false };
 
 const emptyMultiSwings = (): MultiSwing[] =>
   Array.from({ length: 3 }, () => ({ side: null, front: null }));
@@ -31,6 +36,18 @@ export default function VideoUpload({ nickname, onResult }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<UploadTab>("single");
   const [multiSwings, setMultiSwings] = useState<MultiSwing[]>(emptyMultiSwings);
+  const [consent, setConsent] = useState<ConsentState>(NO_CONSENT);
+  const allConsented = consent.age && consent.rights && consent.terms;
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem(CONSENT_KEY) === TERMS_VERSION) {
+        setConsent({ age: true, rights: true, terms: true });
+      }
+    } catch {
+      // 저장소 접근이 막힌 브라우저에서는 매번 동의를 받는다.
+    }
+  }, []);
 
   // 브라우저 스켈레톤(관절) 추출 — 파일 선택 즉시 백그라운드로 진행.
   // 실패해도 분석은 서버 폴백으로 정상 동작하므로 제출을 막지 않는다.
@@ -94,6 +111,10 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       setError("먼저 닉네임을 입력해 주세요.");
       return;
     }
+    if (!allConsented) {
+      setError("이용 조건 3가지에 모두 동의해 주세요.");
+      return;
+    }
     if (tab === "single" && !sideFile && !frontFile) {
       setError("측면샷 또는 정면샷 중 최소 1개는 업로드해 주세요.");
       return;
@@ -142,9 +163,17 @@ export default function VideoUpload({ nickname, onResult }: Props) {
       const userResponse = await fetch("/api/user", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nickname: nickname.trim() }),
+        body: JSON.stringify({ nickname: nickname.trim(), consentVersion: TERMS_VERSION }),
       });
-      if (!userResponse.ok) throw new Error("사용자 세션을 만들지 못했습니다.");
+      const userData = await userResponse.json().catch(() => null);
+      if (!userResponse.ok || !userData?.consented) {
+        throw new Error("사용자 세션을 만들지 못했습니다.");
+      }
+      try {
+        localStorage.setItem(CONSENT_KEY, TERMS_VERSION);
+      } catch {
+        // 동의 기록은 서버에 저장되므로 브라우저 저장 실패는 무시한다.
+      }
 
       setBusyMessage("안전한 영상 업로드를 준비하고 있어요…");
       const presignResponse = await fetch("/api/uploads/presign", {
@@ -439,10 +468,47 @@ export default function VideoUpload({ nickname, onResult }: Props) {
         </div>
       </div>
 
+      <fieldset className="mt-5 space-y-2 rounded-xl border border-fairway-100 bg-fairway-50/40 p-3 text-sm text-fairway-900">
+        <legend className="px-1 text-xs font-semibold text-fairway-700">이용 전 확인 (필수)</legend>
+        {(
+          [
+            { key: "age", label: `만 ${MINIMUM_AGE}세 이상입니다.` },
+            {
+              key: "rights",
+              label: "직접 촬영했거나 사용 권리가 있는 영상이며, 영상에 나온 다른 사람의 동의를 받았습니다.",
+            },
+            { key: "terms", label: null },
+          ] as { key: keyof ConsentState; label: string | null }[]
+        ).map(({ key, label }) => (
+          <label key={key} className="flex min-h-[32px] cursor-pointer items-start gap-2.5">
+            <input
+              type="checkbox"
+              checked={consent[key]}
+              onChange={(e) => setConsent((current) => ({ ...current, [key]: e.target.checked }))}
+              className="mt-0.5 h-5 w-5 shrink-0 accent-fairway-700"
+            />
+            <span className="leading-snug">
+              {label ?? (
+                <>
+                  <a href="/terms" target="_blank" className="font-semibold underline underline-offset-2">
+                    이용약관
+                  </a>
+                  과{" "}
+                  <a href="/privacy" target="_blank" className="font-semibold underline underline-offset-2">
+                    개인정보처리방침
+                  </a>
+                  에 동의하며, 분석을 위해 영상이 Google(미국 등)로 국외 이전되는 것에 동의합니다.
+                </>
+              )}
+            </span>
+          </label>
+        ))}
+      </fieldset>
+
       <button
         onClick={submit}
-        disabled={busy}
-        className="mt-5 min-h-[52px] w-full rounded-xl bg-fairway-700 px-4 py-3 text-base font-semibold text-white shadow-sm transition active:bg-fairway-900 disabled:opacity-50"
+        disabled={busy || !allConsented}
+        className="mt-3 min-h-[52px] w-full rounded-xl bg-fairway-700 px-4 py-3 text-base font-semibold text-white shadow-sm transition active:bg-fairway-900 disabled:opacity-50"
       >
         {busy
           ? "코치가 영상을 보는 중…"

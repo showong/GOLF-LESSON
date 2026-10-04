@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { hasConsent } from "@/lib/db";
 import {
   consumeRateLimit,
   createAnalysisJob,
@@ -9,6 +10,7 @@ import {
   type AnalysisJobPayload,
 } from "@/lib/deployment-db";
 import { ownerIdFromRequest } from "@/lib/identity";
+import { TERMS_VERSION } from "@/lib/legal";
 import { validatePoseTrack } from "@/lib/pose";
 import { enqueueAnalysis } from "@/lib/queue";
 import { analysisSharedLimits } from "@/lib/request-limits";
@@ -36,6 +38,12 @@ export async function POST(request: Request) {
   const contentLength = Number(request.headers.get("content-length") ?? 0);
   if (contentLength > 7 * 1024 * 1024) {
     return NextResponse.json({ error: "분석 요청 정보가 너무 큽니다." }, { status: 413 });
+  }
+  if (!(await hasConsent(userId, TERMS_VERSION))) {
+    return NextResponse.json(
+      { error: "이용약관·개인정보처리방침 동의가 필요합니다.", code: "CONSENT_REQUIRED" },
+      { status: 403 },
+    );
   }
   try {
     const body = (await request.json()) as CreateBody;

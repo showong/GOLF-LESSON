@@ -177,7 +177,7 @@ export default function AnalysisResult({ data, skeletonSources = [] }: Props) {
         <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
           <div>
             <div className="text-[11px] uppercase tracking-wider text-fairway-100/70">
-              {headCoach.name} 판정
+              {headCoach.name} 판정 · AI 가상 코치
             </div>
             <h2 className="mt-1 flex flex-wrap items-center gap-2 text-xl font-bold sm:text-2xl">
               {labels.club} · {labels.grade} LV-{a.level}
@@ -323,6 +323,9 @@ export default function AnalysisResult({ data, skeletonSources = [] }: Props) {
           <div>
             <div className="text-sm font-semibold text-fairway-900">
               {coach.name} · {coach.title}
+              <span className="ml-1.5 rounded bg-fairway-100 px-1.5 py-0.5 align-middle text-[10px] font-medium text-fairway-700">
+                AI 가상 코치
+              </span>
             </div>
             <div className="text-xs text-fairway-700/70">{coach.vibe}</div>
           </div>
