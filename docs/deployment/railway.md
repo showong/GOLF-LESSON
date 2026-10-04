@@ -15,6 +15,7 @@
 - worker는 외부 도메인을 만들지 않고 private network만 사용한다.
 - web의 pre-deploy 명령은 `npm run db:migrate`다.
 - worker 동시성은 초기 `WORKER_CONCURRENCY=1`로 시작한다.
+- worker는 1시간마다 보관 기간 정리(영상 30일 등)를 실행하므로 항상 1개 이상 떠 있어야 한다.
 
 ## Bucket CORS
 

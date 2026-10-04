@@ -13,8 +13,15 @@ async function main() {
 // 영속 파일 잠금의 영향을 받지 않는 완전 격리 DB로 반복 실행 안정성을 확보한다.
 process.env.PGLITE_DATA_DIR = "memory://";
 process.env.SESSION_SECRET = "deployment-test-secret-at-least-32-bytes";
+const os = await import("node:os");
+const fsp = await import("node:fs/promises");
+const path = await import("node:path");
+const bucketDir = await fsp.mkdtemp(path.join(os.tmpdir(), "golf-bucket-test-"));
+process.env.LOCAL_BUCKET_DIR = bucketDir;
 
-const { closeDatabase } = await import("../src/lib/database");
+const { closeDatabase, query } = await import("../src/lib/database");
+const { deleteUserData, runRetention } = await import("../src/lib/retention");
+const { localObjectPath } = await import("../src/lib/storage");
 const { getOrCreateUser } = await import("../src/lib/db");
 const {
   consumeRateLimit,
@@ -129,8 +136,48 @@ try {
     (await getJobByIdempotencyKey(userA.id, key))?.id === first.job.id,
     "재전송 검사는 영상 상태 확인 전에 기존 작업 조회 가능",
   );
+
+  console.log("\n[7] 기록 삭제와 보관 기간 정리");
+  const exists = (file: string) => fsp.stat(file).then(() => true, () => false);
+  const putLocalFile = async (objectKey: string) => {
+    const file = localObjectPath(objectKey);
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    await fsp.writeFile(file, "video");
+    return file;
+  };
+  const leaver = await getOrCreateUser(randomUUID(), "탈퇴자");
+  const [leaverVideo] = await createVideoReservations(leaver.id, [
+    { name: "a.mp4", type: "video/mp4", size: 5, view: "side", swingIndex: 0 },
+  ]);
+  const leaverFile = await putLocalFile(leaverVideo.objectKey);
+  await deleteUserData(leaver.id);
+  check(!(await exists(leaverFile)), "전체 삭제 시 영상 파일 삭제");
+  const leftRows = await query<{ count: string }>(
+    "SELECT COUNT(*)::text AS count FROM videos WHERE user_id = $1",
+    [leaver.id],
+  );
+  check(leftRows.rows[0].count === "0", "전체 삭제 시 DB 기록 삭제");
+
+  const keeper = await getOrCreateUser(randomUUID(), "보관자");
+  const [oldVideo, newVideo] = await createVideoReservations(keeper.id, [
+    { name: "old.mp4", type: "video/mp4", size: 5, view: "side", swingIndex: 0 },
+    { name: "new.mp4", type: "video/mp4", size: 5, view: "front", swingIndex: 0 },
+  ]);
+  const oldFile = await putLocalFile(oldVideo.objectKey);
+  const newFile = await putLocalFile(newVideo.objectKey);
+  await query("UPDATE videos SET created_at = NOW() - INTERVAL '31 days' WHERE id = $1", [oldVideo.id]);
+  const dormant = await getOrCreateUser(randomUUID(), "휴면");
+  await query("UPDATE users SET updated_at = NOW() - INTERVAL '366 days' WHERE id = $1", [dormant.id]);
+  const report = await runRetention();
+  check(!report.skipped && report.expiredVideos === 1, "30일 지난 영상만 정리 대상");
+  check(!(await exists(oldFile)) && (await exists(newFile)), "만료 영상 파일만 삭제");
+  check((await getVideoForUser(keeper.id, oldVideo.id))?.status === "deleted", "만료 영상 상태를 deleted로 표시");
+  check((await getVideoForUser(keeper.id, newVideo.id))?.status === "pending", "보관 기간 내 영상 유지");
+  const dormantRows = await query("SELECT id FROM users WHERE id = $1", [dormant.id]);
+  check(dormantRows.rows.length === 0, "1년 넘게 이용하지 않은 사용자 삭제");
 } finally {
   await closeDatabase();
+  await fsp.rm(bucketDir, { recursive: true, force: true });
 }
 
 if (failures > 0) {

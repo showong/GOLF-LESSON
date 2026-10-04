@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { VIDEO_RETENTION_DAYS } from "@/lib/legal";
 import type { AnalysisRecord, ClubType } from "@/lib/types";
 
 interface Section {
@@ -25,6 +26,35 @@ export default function ProgressDashboard({
 }) {
   const [sections, setSections] = useState<Section[] | null>(null);
   const [loading, setLoading] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function deleteAllRecords() {
+    const confirmed = window.confirm(
+      "영상, 분석 기록, 닉네임을 모두 삭제할까요?\n삭제한 기록은 되돌릴 수 없어요.",
+    );
+    if (!confirmed) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const response = await fetch("/api/user", { method: "DELETE" });
+      if (!response.ok && response.status !== 401) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error ?? "기록을 삭제하지 못했습니다.");
+      }
+      try {
+        localStorage.removeItem("golf-tutor:nickname");
+        localStorage.removeItem("golf-tutor:consent-version");
+      } catch {
+        // 서버 기록과 쿠키는 이미 삭제됐다.
+      }
+      window.alert("모든 기록을 삭제했어요.");
+      window.location.reload();
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "기록을 삭제하지 못했습니다.");
+      setDeleting(false);
+    }
+  }
 
   useEffect(() => {
     if (!nickname.trim()) {
@@ -94,6 +124,19 @@ export default function ProgressDashboard({
             </div>
           ))}
       </div>
+
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-2 border-t border-fairway-100 pt-3 text-xs text-fairway-700/70">
+        <span>원본 영상은 업로드 {VIDEO_RETENTION_DAYS}일 후 자동 삭제돼요.</span>
+        <button
+          type="button"
+          onClick={deleteAllRecords}
+          disabled={deleting}
+          className="min-h-[36px] rounded-lg border border-rose-200 px-3 py-1.5 font-semibold text-rose-700 active:bg-rose-50 disabled:opacity-50"
+        >
+          {deleting ? "삭제하는 중…" : "내 기록 전체 삭제"}
+        </button>
+      </div>
+      {deleteError && <p className="mt-2 text-xs text-rose-700">{deleteError}</p>}
     </section>
   );
 }

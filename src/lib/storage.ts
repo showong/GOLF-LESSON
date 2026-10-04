@@ -3,7 +3,14 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { VideoRow } from "./deployment-db";
 
@@ -122,6 +129,43 @@ export async function materializeVideo(video: VideoRow, destination: string) {
   );
   if (!response.Body) throw new Error("Bucket에서 영상 본문을 받지 못했습니다.");
   await pipeline(response.Body as NodeJS.ReadableStream, fs.createWriteStream(destination));
+}
+
+/** 원본 영상 하나를 삭제한다. 이미 없으면 성공으로 본다. */
+export async function deleteStoredObject(objectKey: string) {
+  if (!isS3Mode()) {
+    await fsp.rm(/*turbopackIgnore: true*/ localObjectPath(objectKey), { force: true });
+    return;
+  }
+  await s3Client().send(new DeleteObjectCommand({ Bucket: bucketName(), Key: objectKey }));
+}
+
+/** 사용자 경로(users/{id}/) 아래 모든 객체를 삭제한다. DB 기록이 없는 객체까지 정리한다. */
+export async function deleteUserObjects(userId: string) {
+  if (!/^[0-9a-f-]{36}$/i.test(userId)) throw new Error("사용자 ID가 올바르지 않습니다.");
+  const prefix = `users/${userId}/`;
+  if (!isS3Mode()) {
+    await fsp.rm(/*turbopackIgnore: true*/ localObjectPath(prefix), { recursive: true, force: true });
+    return;
+  }
+  const client = s3Client();
+  let continuationToken: string | undefined;
+  do {
+    const page = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName(),
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    // S3 호환 저장소마다 다중 삭제(DeleteObjects)의 체크섬 요구가 달라 개별 삭제한다.
+    for (const item of page.Contents ?? []) {
+      if (item.Key) {
+        await client.send(new DeleteObjectCommand({ Bucket: bucketName(), Key: item.Key }));
+      }
+    }
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+  } while (continuationToken);
 }
 
 export function storageMode() {
