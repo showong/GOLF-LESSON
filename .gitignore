@@ -18,6 +18,6 @@ data/*.db-wal
 data/*.db-shm
 data/pglite/
 data/local-bucket/
-uploads/
-tmp/
+/uploads/
+/tmp/
 tsconfig.tsbuildinfo
